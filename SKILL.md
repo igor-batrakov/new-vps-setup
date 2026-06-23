@@ -23,7 +23,9 @@ description: >
   работать сами. Человек только реагирует на алерты.
 - **Каждый шаг проверяется.** После изменения — проверка результата, и только потом следующий шаг.
 
-> **Целевая ОС:** Ubuntu 22.04 / 24.04 LTS. Команды для других дистрибутивов отличаются.
+> **Целевая ОС (сервер):** Ubuntu 22.04 / 24.04 LTS — команды для других дистрибутивов отличаются.
+> **Локальная машина — любая** (Linux / macOS / Windows): от неё зависят только клиентские
+> команды для SSH-ключей (раздел 1.3), всё остальное выполняется на сервере и не зависит от твоей ОС.
 
 ## Золотые правила (перед ЛЮБЫМ изменением)
 
@@ -108,11 +110,21 @@ sudo usermod -aG sudo <USERNAME>
 
 Тип ключа — **ed25519** (не RSA). Имя — `<server>_<device>`, с passphrase.
 
-**На локальной машине:**
+**На локальной машине (Linux / macOS):**
 ```bash
 ssh-keygen -t ed25519 -f ~/.ssh/<server>_<device> -C "<server>_<device>"
 ssh-copy-id -i ~/.ssh/<server>_<device>.pub <USERNAME>@<SERVER_IP>
 ```
+
+> **На Windows 10/11** OpenSSH-клиент встроен (`ssh`, `ssh-keygen` работают так же), но
+> **`ssh-copy-id` там нет.** Два пути:
+> - **Проще всего — WSL:** установи Ubuntu через WSL и выполняй команды как для Linux выше.
+> - **Чистый PowerShell** — сгенерируй ключ и скопируй его на сервер вручную:
+>   ```powershell
+>   ssh-keygen -t ed25519 -f $env:USERPROFILE\.ssh\<server>_<device> -C "<server>_<device>"
+>   Get-Content $env:USERPROFILE\.ssh\<server>_<device>.pub | ssh <USERNAME>@<SERVER_IP> "mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
+>   ```
+>   Файл конфига — `%USERPROFILE%\.ssh\config` (тот же формат, что ниже).
 
 **Проверь вход по ключу в ОТДЕЛЬНОЙ сессии (старую не закрывай!):**
 ```bash
