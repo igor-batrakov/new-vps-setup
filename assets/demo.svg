@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="640" viewBox="0 0 800 640" font-family="SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace" font-size="15">
+  <!-- window -->
+  <rect x="0" y="0" width="800" height="640" rx="10" fill="#0d1117"/>
+  <rect x="0" y="0" width="800" height="38" rx="10" fill="#161b22"/>
+  <rect x="0" y="28" width="800" height="10" fill="#161b22"/>
+  <!-- traffic lights -->
+  <circle cx="22" cy="19" r="6" fill="#ff5f56"/>
+  <circle cx="42" cy="19" r="6" fill="#ffbd2e"/>
+  <circle cx="62" cy="19" r="6" fill="#27c93f"/>
+  <text x="400" y="24" text-anchor="middle" fill="#8b949e" font-size="13">new-vps-setup · иллюстративный пример</text>
+
+  <!-- body -->
+  <text x="24" y="80"  fill="#8b949e">$ <tspan fill="#c9d1d9">claude</tspan></text>
+  <text x="24" y="105" fill="#8b949e">&gt; <tspan fill="#79c0ff">Помоги настроить новый Ubuntu VPS под продакшн</tspan></text>
+
+  <text x="24" y="155" fill="#bc8cff">● <tspan fill="#c9d1d9">Using skill: </tspan><tspan fill="#e3b341">new-vps-setup</tspan></text>
+
+  <text x="24" y="205" fill="#58a6ff">▶ Шаг 0 · Диагностика</text>
+  <text x="44" y="230" fill="#3fb950">✓ <tspan fill="#c9d1d9">Ubuntu 24.04 LTS · 2 ГБ RAM · 1 vCPU</tspan></text>
+  <text x="44" y="255" fill="#d29922">⚠ <tspan fill="#c9d1d9">cloud-init: PasswordAuthentication yes → исправим</tspan></text>
+  <text x="44" y="280" fill="#3fb950">✓ <tspan fill="#c9d1d9">UFW: inactive</tspan></text>
+
+  <text x="24" y="330" fill="#58a6ff">▶ Шаг 1 · Hardening</text>
+  <text x="44" y="355" fill="#3fb950">✓ <tspan fill="#c9d1d9">Пользователь deploy + sudo (с паролем)</tspan></text>
+  <text x="44" y="380" fill="#3fb950">✓ <tspan fill="#c9d1d9">SSH-ключ ed25519 — вход проверен в новой сессии</tspan></text>
+  <text x="44" y="405" fill="#3fb950">✓ <tspan fill="#c9d1d9">PasswordAuthentication no · PermitRootLogin no</tspan></text>
+  <text x="44" y="430" fill="#3fb950">✓ <tspan fill="#c9d1d9">unattended-upgrades включён (security-патчи сами)</tspan></text>
+  <text x="44" y="455" fill="#3fb950">✓ <tspan fill="#c9d1d9">fail2ban активен (sshd)</tspan></text>
+
+  <text x="24" y="505" fill="#58a6ff">▶ Шаг 5 · Бэкапы</text>
+  <text x="44" y="530" fill="#3fb950">✓ <tspan fill="#c9d1d9">restic → Backblaze B2 (offsite, ежедневно 03:00)</tspan></text>
+  <text x="44" y="555" fill="#3fb950">✓ <tspan fill="#c9d1d9">Учебное восстановление: OK</tspan></text>
+
+  <text x="24" y="605" fill="#3fb950" font-weight="bold">✅ Сервер готов к проду <tspan fill="#6e7681" font-weight="normal">— дальше обслуживает себя сам</tspan></text>
+</svg>
