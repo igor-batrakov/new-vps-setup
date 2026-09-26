@@ -28,7 +28,7 @@ if [ -f /var/run/reboot-required ]; then bad "ждёт перезагрузки 
 h "Пользователи и sudo"
 info "скрипт запустил: ${SUDO_USER:-root}"
 SUDOERS=$(getent group sudo | cut -d: -f4)
-if [ -n "$SUDOERS" ]; then ok "в группе sudo: $SUDOERS"; else bad "нет ни одного sudo-пользователя, работа только под root" "1.2"; fi
+if [ -n "$SUDOERS" ]; then ok "в группе sudo: $SUDOERS"; else bad "нет ни одного sudo-пользователя, работа только под root (если это осознанная схема — зафиксируй в паспорте)" "1.2"; fi
 NP=$(grep -rn NOPASSWD /etc/sudoers /etc/sudoers.d/ 2>/dev/null | grep -vE ':[[:space:]]*#')
 if [ -n "$NP" ]; then
   NPFILE=$(echo "$NP" | head -1 | cut -d: -f1)
@@ -55,14 +55,25 @@ if [ -z "$SSHT" ]; then
 else
   val() { echo "$SSHT" | awk -v k="$1" '$1==k{print $2}'; }
   info "порт: $(val port | paste -sd ' ')"
-  if [ "$(val permitrootlogin)" = "no" ]; then ok "PermitRootLogin no"; else bad "PermitRootLogin $(val permitrootlogin)" "1.4"; fi
+  PRL=$(val permitrootlogin)
+  case "$PRL" in
+    no) ok "PermitRootLogin no" ;;
+    prohibit-password) bad "PermitRootLogin prohibit-password — root входит по ключу (если это осознанная схема — зафиксируй в паспорте)" "1.4" ;;
+    *) bad "PermitRootLogin $PRL — root входит по паролю" "1.4" ;;
+  esac
   if [ "$(val passwordauthentication)" = "no" ]; then ok "PasswordAuthentication no"; else bad "PasswordAuthentication $(val passwordauthentication) — вход по паролю открыт" "1.4"; fi
-  AU=$(echo "$SSHT" | awk '$1=="allowusers"{print $2}' | tr '\n' ' ')
+  AU=$(echo "$SSHT" | awk '$1=="allowusers"{print $2}' | paste -sd ' ')
   if [ -n "$AU" ]; then ok "AllowUsers: $AU"; else bad "AllowUsers не задан" "1.4"; fi
 fi
 info "активация: ssh.socket=$(systemctl is-active ssh.socket 2>/dev/null) ssh.service=$(systemctl is-active ssh.service 2>/dev/null)"
-if grep -qsi '^PasswordAuthentication yes' /etc/ssh/sshd_config.d/50-cloud-init.conf; then
-  bad "50-cloud-init.conf содержит PasswordAuthentication yes (перебивает hardening)" "1.4"
+# Чужие drop-in с опасными значениями: если эффективное значение другое, защита держится только на порядке имён файлов
+LOOSE=$(grep -HsiE '^\s*(PasswordAuthentication|PermitRootLogin)\s+yes' /etc/ssh/sshd_config.d/*.conf 2>/dev/null | sed 's|/etc/ssh/sshd_config.d/||')
+if [ -n "$LOOSE" ]; then
+  if echo "$SSHT" | grep -qE '^(passwordauthentication|permitrootlogin) yes'; then
+    bad "drop-in с yes действует: $(echo "$LOOSE" | paste -sd ';')" "1.4"
+  else
+    info "drop-in с yes перебит порядком файлов (first match wins), держится на именах: $(echo "$LOOSE" | paste -sd ';')"
+  fi
 fi
 for t in ssh-rollback ufw-rollback; do
   systemctl is-active "$t.timer" >/dev/null 2>&1 && bad "висит таймер отката $t.timer — отмени после проверки входа" "гейт"
@@ -107,6 +118,8 @@ if have pro; then
   else
     bad "Ubuntu Pro не подключён — security-патчи для universe (fail2ban, restic, certbot) не приходят" "1.5"
   fi
+else
+  bad "ubuntu-pro-client не установлен — Ubuntu Pro (ESM для universe) не подключён" "1.5"
 fi
 info "доступно обновлений (локальный кэш apt): $(apt list --upgradable 2>/dev/null | grep -c upgradable)"
 
@@ -164,12 +177,16 @@ h "Бэкапы и алерты"
 # Системные dpkg-db-backup.timer, cron.daily/dpkg и logrotate есть на любом Ubuntu — это не бэкап, исключаем,
 # иначе голый сервер получит ложное «своя схема» вместо [!!].
 TIMERS=$(systemctl list-timers --all --no-legend --no-pager 2>/dev/null | awk '{print $(NF-1)}' \
-  | grep -iE 'backup|dump|health|heartbeat|notify|alert|snapshot' | grep -vE '^(dpkg-db-backup|logrotate|man-db|e2scrub)' | sort -u | paste -sd ' ')
+  | grep -iE 'backup|dump|restic|borg|snapshot|health|heartbeat|notify|alert|resource|check|monitor' \
+  | grep -vE '^(dpkg-db-backup|logrotate|man-db|e2scrub|fstrim|apt-daily|snapd|ua-|ubuntu-advantage|motd)' | sort -u | paste -sd ' ')
 CRONS=$(grep -rlisE 'backup|dump|restic|borg|rclone|health|notify|alert' /etc/cron.d /etc/cron.daily /etc/cron.hourly /etc/cron.weekly /var/spool/cron/crontabs 2>/dev/null \
   | grep -vE '/(dpkg|logrotate|man-db|apt-compat|e2scrub_all|sysstat)$' | paste -sd ' ')
 TOOLS=$(for t in restic borg rclone duplicity; do have $t && printf '%s ' "$t"; done)
-NOTIFIERS=$(find /usr/local/bin -maxdepth 1 -type f -perm -u+x -iregex '.*\(alert\|notify\|tg-\|telegram\).*' \
+NOTIFIERS=$(find /usr/local/bin /usr/local/sbin -maxdepth 1 -type f -perm -u+x -iregex '.*\(alert\|notify\|tg-\|telegram\|ntfy\).*' \
   -not -name '*.bak*' -not -name '*~' -not -name '*.orig' -not -name '*.old' -printf '%f ' 2>/dev/null)
+# Push-мониторинг (heartbeat в Gatus/healthchecks/ntfy вместо локального отправителя): ищем по содержимому
+PUSH=$(grep -rlisE 'gatus|heartbeat|healthchecks|hc-ping|api\.telegram\.org|ntfy\.sh|pushover' \
+  /usr/local/bin /usr/local/sbin /etc/systemd/system /etc/restic /root/.config/restic 2>/dev/null | sed 's|.*/||' | sort -u | head -8 | paste -sd ' ')
 
 if have restic && systemctl is-enabled backup-daily.timer >/dev/null 2>&1; then
   ok "схема скилла: restic + backup-daily.timer ($(systemctl list-timers backup-daily.timer --no-legend --no-pager 2>/dev/null | awk '{print "следующий", $1, $2, $3}'))"
@@ -185,14 +202,16 @@ fi
 if [ -x /usr/local/bin/tg-alert ]; then
   ok "tg-alert есть"
 elif [ -n "$NOTIFIERS" ]; then
-  info "свой канал алертов: /usr/local/bin/{${NOTIFIERS% }} — проверь, что тестовое сообщение доходит"
+  info "свой канал алертов: ${NOTIFIERS% } — проверь, что тестовое сообщение доходит"
+elif [ -n "$PUSH" ]; then
+  info "push-мониторинг (heartbeat/telegram в скриптах и юнитах): $PUSH — проверь, что пропуск heartbeat даёт алерт"
 else
   bad "нет канала алертов (tg-alert или аналог)" "6"
 fi
 if [ -f /etc/cron.d/healthcheck ]; then
   ok "healthcheck.sh в cron есть"
-elif echo "$TIMERS $CRONS" | grep -qiE 'health|heartbeat'; then
-  info "своя проверка здоровья: $(echo "$TIMERS $CRONS" | tr ' ' '\n' | grep -iE 'health|heartbeat' | tr '\n' ' ')"
+elif echo "$TIMERS $CRONS" | grep -qiE 'health|resource|monitor'; then
+  info "своя проверка ресурсов: $(echo "$TIMERS $CRONS" | tr ' ' '\n' | grep -iE 'health|resource|monitor' | paste -sd ' ')"
 else
   bad "нет проверки ресурсов (healthcheck.sh) — диск/память/упавшие сервисы никто не заметит" "6"
 fi
@@ -219,7 +238,14 @@ if have nginx; then
       DAYS=$(( (ENDS - NOW) / 86400 ))
       if [ "$DAYS" -lt 14 ]; then bad "сертификат $c истекает через $DAYS дн. — автопродление не работает?" "4"; else ok "сертификат $(basename "$(dirname "$c")")/$(basename "$c"): ещё $DAYS дн."; fi
     done <<< "$CERTS"
-    if have certbot; then info "выпуск: certbot"; elif [ -d /root/.acme.sh ]; then info "выпуск: acme.sh"; else info "выпуск: не certbot и не acme.sh — проверь, кто продлевает"; fi
+    ISS=""
+    have certbot && ISS="certbot"
+    [ -d /root/.acme.sh ] && ISS="${ISS:+$ISS + }acme.sh"
+    case "$ISS" in
+      "") info "выпуск: не certbot и не acme.sh — проверь, кто продлевает" ;;
+      *+*) info "выпуск: $ISS — два продлевателя; убедись, что они не выпускают одни и те же домены" ;;
+      *) info "выпуск: $ISS" ;;
+    esac
   else
     bad "nginx без ssl_certificate — HTTPS не настроен?" "4"
   fi
