@@ -40,26 +40,25 @@ restic version
 
 > Не используй для прод-бэкапа Google Drive / Dropbox через костыли — ненадёжно.
 
-## 3. Секреты — в защищённый файл (не в код, не в git)
+## 3. Секреты — в защищённый файл на сервере, мимо агента
 
-`/root/.config/restic/env` (только root, `chmod 600`). Команда ниже — для человека в
-терминале; агент пишет этот файл локально и доставляет через `scp` + `install -m 600`
-(SKILL.md, правила для агента, п. 2):
+`/root/.config/restic/env` (только root, 600) создаёт `scripts/restic-env.sh`. Пароль
+репозитория генерируется **на сервере** и показывается **один раз** в терминале пользователя:
+через агента, его контекст и локальный диск он не проходит. Запускает пользователь в
+отдельном окне терминала:
 ```bash
-sudo mkdir -p /root/.config/restic
-sudo tee /root/.config/restic/env >/dev/null <<'EOF'
-export RESTIC_REPOSITORY="b2:<BUCKET_NAME>:prod-backup"
-export RESTIC_PASSWORD="<СГЕНЕРИРОВАННЫЙ_ПАРОЛЬ_ХРАНИ_В_МЕНЕДЖЕРЕ_ПАРОЛЕЙ>"
-export B2_ACCOUNT_ID="<KEY_ID>"
-export B2_ACCOUNT_KEY="<APPLICATION_KEY>"
-# Dead-man's switch: заведи бесплатный check на https://healthchecks.io (период 1 day,
-# grace 2 hours, алерт в Telegram/email) и вставь его ping-URL:
-export HC_PING_URL="https://hc-ping.com/<UUID>"
-EOF
-sudo chmod 600 /root/.config/restic/env
+scp scripts/restic-env.sh <alias>:/tmp/ && ssh -t <alias> sudo bash /tmp/restic-env.sh
 ```
+Скрипт спросит: куда бэкапить (`b2:<bucket>:prod-backup`, `sftp:user@host:/path`,
+`s3:https://<endpoint>/<bucket>`), ключи хранилища (ввод скрыт), ping-URL healthchecks.io
+(Enter — пропустить: тогда о **пропущенном** запуске узнаешь только по тишине, алерт об
+**упавшем** запуске будет всё равно). Затем покажет пароль и не запишет файл, пока не
+ответишь «да» на «сохранил в менеджер паролей?».
 
-Сгенерировать стойкий пароль repo: `openssl rand -base64 24` → **сразу сохрани его в менеджер паролей.**
+> **Это третий секрет сервера** после паролей root и sudo, и он не в `~/.vps/<host>.env`.
+> Запись в менеджере назови понятно: «restic <hostname>». Потеря пароля = все бэкапы мертвы.
+
+healthchecks.io: бесплатный check, период 1 day, grace 2 hours, уведомление в Telegram/email.
 
 ## 4. Инициализация репозитория (один раз)
 
@@ -84,9 +83,12 @@ source /root/.config/restic/env
 # find /var/backups -name '*.sql.gz' -mtime +7 -delete
 
 # СПИСОК ПУТЕЙ — подставь свои (см. SKILL.md, секция 5 «Что бэкапить»).
+# Если репозиторий локальный (учебный прогон) — он НЕ должен лежать внутри этих путей,
+# иначе бэкап пишет сам себя.
 PATHS=(
   /etc                       # конфиги системы
   /root/server-notes.md      # паспорт сервера (SKILL.md, 9.3)
+  /root/.config              # env restic и tg-alert, чтобы восстановить обвязку
   /home/<USERNAME>/app       # код/данные приложения (НЕ node_modules/venv)
   /var/lib/<service>         # данные сервиса
   /var/backups               # дампы БД (если делаешь дамп выше)
@@ -99,8 +101,13 @@ restic backup "${PATHS[@]}" \
 # Ротация: храним 7 дней + 4 недели + 6 месяцев, остальное удаляем
 restic forget --prune --keep-daily 7 --keep-weekly 4 --keep-monthly 6
 
-# Проверка целостности: каждый запуск читает 1/30 данных → за месяц весь repo сверен
-restic check --read-data-subset=1/30
+# Проверка целостности: ежедневно 10% данных, первого числа — всё целиком.
+# (Доля 1/30 на маленьком репозитории округляется до нуля пакетов и не проверяет ничего.)
+if [ "$(date +%d)" = "01" ]; then
+  restic check --read-data
+else
+  restic check --read-data-subset=10%
+fi
 
 # Dead-man's switch: сообщаем healthchecks.io «бэкап прошёл». Сюда доходим только если
 # всё выше отработало (set -e). Нет пинга к сроку → healthchecks сам пришлёт алерт.
@@ -119,7 +126,9 @@ sudo /usr/local/bin/backup-now
 
 ## 6. Автозапуск ежедневно (systemd timer — надёжнее cron) + алерт о падении
 
-Нужен `/usr/local/bin/tg-alert` из SKILL.md, раздел 6 (сначала проверь, что `tg-alert "test"` доходит).
+Нужен `/usr/local/bin/tg-alert` из SKILL.md, раздел 6 (сначала проверь, что тестовое
+сообщение доходит). Если алерты пропущены осознанно — `OnFailure` ниже не ставь, а в паспорт
+запиши, что о падении бэкапа никто не сообщит.
 
 `/etc/systemd/system/backup-failed.service` — срабатывает, когда бэкап завершился ошибкой:
 ```ini
@@ -127,7 +136,7 @@ sudo /usr/local/bin/backup-now
 Description=Alert on restic backup failure
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/tg-alert "BACKUP FAILED. Смотри: journalctl -u backup-daily.service -n 50"
+ExecStart=/usr/local/bin/tg-alert "🔴 Бэкап не прошёл" "Ночная копия не сделана — пока не починишь, свежего бэкапа нет. Что случилось: sudo journalctl -u backup-daily.service -n 50"
 ```
 
 `/etc/systemd/system/backup-daily.service`:
@@ -160,8 +169,16 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now backup-daily.timer
 systemctl list-timers backup-daily.timer
 
-# Проверь, что алерт реально доходит — ДО того, как он понадобится:
-sudo systemctl start backup-failed.service     # в Telegram пришло «BACKUP FAILED»?
+# Проверь связку СКВОЗНЯКОМ, а не только отправку: временно ломаем бэкап и смотрим,
+# что backup-failed запустился сам. (Просто `start backup-failed.service` проверяет
+# лишь Telegram, но не OnFailure.)
+sudo mkdir -p /etc/systemd/system/backup-daily.service.d
+printf '[Service]\nExecStart=\nExecStart=/bin/false\n' | sudo tee /etc/systemd/system/backup-daily.service.d/test.conf
+sudo systemctl daemon-reload && sudo systemctl start backup-daily.service; true
+systemctl show backup-failed.service -p ActiveEnterTimestamp     # только что? → в Telegram пришло «🔴 Бэкап не прошёл»
+sudo rm /etc/systemd/system/backup-daily.service.d/test.conf
+sudo systemctl daemon-reload && sudo systemctl reset-failed backup-daily.service
+sudo systemctl start backup-daily.service && echo 'настоящий бэкап прошёл'
 ```
 
 > `Persistent=true` — если сервер был выключен в 03:00, бэкап догонится при старте.
@@ -179,8 +196,9 @@ source /root/.config/restic/env   # под sudo -i
 restic snapshots --compact
 
 # Восстановить ОДИН файл/папку в /var/tmp (не поверх боевых данных!):
-restic restore latest --target /var/tmp/restore-test --include /etc/hostname
-cat /var/tmp/restore-test/etc/hostname   # содержимое совпадает с реальным?
+restic restore latest --target /var/tmp/restore-test --include /etc/hostname --include /etc/fail2ban
+# Сравнение побайтно, не «на глаз»: пустой вывод diff = совпало
+diff -r /var/tmp/restore-test/etc/fail2ban /etc/fail2ban && cmp /var/tmp/restore-test/etc/hostname /etc/hostname && echo 'восстановление совпало'
 rm -rf /var/tmp/restore-test
 
 # Полный restore конкретного снапшота (для реальной аварии):
@@ -190,7 +208,7 @@ rm -rf /var/tmp/restore-test
 > Именно `/var/tmp`, а не `/tmp`: на Ubuntu 26.04 `/tmp` живёт в оперативной памяти, полный
 > restore туда съест RAM и пропадёт после перезагрузки.
 
-Если файл восстановился и совпадает — бэкап рабочий. Если нет — чини, пока не авария.
+Если напечаталось «восстановление совпало» — бэкап рабочий. Если нет — чини, пока не авария.
 
 ## 8. Диагностика
 

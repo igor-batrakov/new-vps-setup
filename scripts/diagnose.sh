@@ -199,7 +199,9 @@ PUSH=$(echo "$PUSH_ALL" | head -10 | paste -sd ' ')
 if have restic && systemctl is-enabled backup-daily.timer >/dev/null 2>&1; then
   ok "схема скилла: restic + backup-daily.timer ($(systemctl list-timers backup-daily.timer --no-legend --no-pager 2>/dev/null | awk '{print "следующий", $1, $2, $3}'))"
   if systemctl cat backup-failed.service >/dev/null 2>&1; then ok "backup-failed.service есть"; else bad "нет алерта о падении бэкапа (backup-failed.service)" "5"; fi
-  if grep -qs 'HC_PING_URL=' /root/.config/restic/env; then ok "healthchecks.io ping задан"; else bad "нет dead-man's switch (HC_PING_URL)" "5"; fi
+  # Непустое значение с https://, а не наличие строки: шаблон env кладёт HC_PING_URL='' и у пропустивших
+  HC=$(grep -s '^export HC_PING_URL=' /root/.config/restic/env | cut -d= -f2- | tr -d "'\"" )
+  if printf '%s' "$HC" | grep -q '^https://'; then ok "healthchecks.io ping задан"; else info "dead-man's switch (healthchecks.io) не настроен — пропуск бэкапа заметишь только по тишине (backups.md, раздел 3)"; fi
 elif [ -n "$TIMERS$CRONS$TOOLS" ]; then
   info "своя схема бэкапов — таймеры: ${TIMERS:-нет}; cron: ${CRONS:-нет}; инструменты: ${TOOLS:-нет}"
   info "сверь с принципами раздела 5: offsite, проверенное восстановление, алерт при падении, dead-man's switch"
@@ -207,8 +209,10 @@ else
   bad "бэкапов не видно: нет restic/borg/rclone и ни одного таймера или cron с backup в имени" "5"
 fi
 
-if [ -x /usr/local/bin/tg-alert ]; then
-  ok "tg-alert есть"
+if [ -x /usr/local/bin/tg-alert ] && [ -s /root/.config/tg-alert/env ]; then
+  ok "tg-alert настроен (/root/.config/tg-alert/env)"
+elif [ -x /usr/local/bin/tg-alert ]; then
+  bad "tg-alert есть, но /root/.config/tg-alert/env пуст — токен не настроен (scripts/tg-setup.sh)" "6"
 elif [ -n "$NOTIFIERS" ]; then
   info "свой канал алертов: ${NOTIFIERS% } — проверь, что тестовое сообщение доходит"
 elif [ -n "$PUSH" ]; then
