@@ -54,7 +54,7 @@ if [ -z "$SSHT" ]; then
   bad "sshd -T не сработал — конфиг сломан? смотри journalctl -u ssh" "10"
 else
   val() { echo "$SSHT" | awk -v k="$1" '$1==k{print $2}'; }
-  info "порт: $(val port | tr '\n' ' ')"
+  info "порт: $(val port | paste -sd ' ')"
   if [ "$(val permitrootlogin)" = "no" ]; then ok "PermitRootLogin no"; else bad "PermitRootLogin $(val permitrootlogin)" "1.4"; fi
   if [ "$(val passwordauthentication)" = "no" ]; then ok "PasswordAuthentication no"; else bad "PasswordAuthentication $(val passwordauthentication) — вход по паролю открыт" "1.4"; fi
   AU=$(echo "$SSHT" | awk '$1=="allowusers"{print $2}' | tr '\n' ' ')
@@ -75,8 +75,9 @@ if have ufw; then
   if echo "$UFWS" | grep -q '^Status: active'; then ok "UFW активен"; else bad "UFW не активен" "2"; fi
   if echo "$UFWS" | grep -q 'Default: deny (incoming)'; then ok "по умолчанию входящие закрыты"; else bad "входящие по умолчанию НЕ закрыты" "2"; fi
   RULES=$(echo "$UFWS" | grep -E 'ALLOW|DENY|REJECT|LIMIT' | grep -v '(v6)')
-  N=$(echo "$RULES" | grep -c .)
-  info "правил: $N (IPv6-дубли скрыты)"
+  F2B=$(echo "$RULES" | grep -c 'by Fail2Ban')
+  RULES=$(echo "$RULES" | grep -v 'by Fail2Ban')
+  info "правил: $(echo "$RULES" | grep -c .) (IPv6-дубли скрыты; временных банов fail2ban: $F2B)"
   echo "$RULES" | ind
   have docker && info "Docker публикует порты в обход UFW — смотри раздел «Открытые порты» и цепочку DOCKER-USER"
 else
@@ -160,10 +161,14 @@ fi
 h "Бэкапы и алерты"
 # Схема скилла: restic + backup-daily.timer + backup-failed.service + HC_PING_URL + tg-alert + healthcheck cron.
 # Другая схема: любые таймеры/крон с backup|dump|health|heartbeat|notify|alert в имени → [..], не [!!].
-TIMERS=$(systemctl list-timers --all --no-legend --no-pager 2>/dev/null | awk '{print $(NF-1)}' | grep -iE 'backup|dump|health|heartbeat|notify|alert|snapshot' | sort -u | tr '\n' ' ')
-CRONS=$(grep -rlisE 'backup|dump|restic|borg|rclone|health|notify|alert' /etc/cron.d /etc/cron.daily /etc/cron.hourly /etc/cron.weekly /var/spool/cron/crontabs 2>/dev/null | tr '\n' ' ')
+# Системные dpkg-db-backup.timer, cron.daily/dpkg и logrotate есть на любом Ubuntu — это не бэкап, исключаем,
+# иначе голый сервер получит ложное «своя схема» вместо [!!].
+TIMERS=$(systemctl list-timers --all --no-legend --no-pager 2>/dev/null | awk '{print $(NF-1)}' \
+  | grep -iE 'backup|dump|health|heartbeat|notify|alert|snapshot' | grep -vE '^(dpkg-db-backup|logrotate|man-db|e2scrub)' | sort -u | paste -sd ' ')
+CRONS=$(grep -rlisE 'backup|dump|restic|borg|rclone|health|notify|alert' /etc/cron.d /etc/cron.daily /etc/cron.hourly /etc/cron.weekly /var/spool/cron/crontabs 2>/dev/null \
+  | grep -vE '/(dpkg|logrotate|man-db|apt-compat|e2scrub_all|sysstat)$' | paste -sd ' ')
 TOOLS=$(for t in restic borg rclone duplicity; do have $t && printf '%s ' "$t"; done)
-NOTIFIERS=$(find /usr/local/bin -maxdepth 1 -type f -iregex '.*\(alert\|notify\|tg-\|telegram\).*' -printf '%f ' 2>/dev/null)
+NOTIFIERS=$(find /usr/local/bin -maxdepth 1 -type f -perm -u+x -iregex '.*\(alert\|notify\|tg-\|telegram\)[^.~]*' -printf '%f ' 2>/dev/null)
 
 if have restic && systemctl is-enabled backup-daily.timer >/dev/null 2>&1; then
   ok "схема скилла: restic + backup-daily.timer ($(systemctl list-timers backup-daily.timer --no-legend --no-pager 2>/dev/null | awk '{print "следующий", $1, $2, $3}'))"
@@ -199,8 +204,11 @@ if [ -n "$FAILED" ]; then bad "упавшие юниты: $FAILED (journalctl -u
 h "Веб и HTTPS"
 if have nginx; then
   info "$(nginx -v 2>&1), sites-enabled: $(ls /etc/nginx/sites-enabled/ 2>/dev/null | tr '\n' ' ')"
-  # Сертификаты — из nginx-конфигов, независимо от того, кто их выпустил (certbot, acme.sh, вручную)
-  CERTS=$(grep -rhoE '^\s*ssl_certificate\s+[^;]+' /etc/nginx/sites-enabled /etc/nginx/conf.d 2>/dev/null | awk '{print $2}' | sort -u)
+  # Сертификаты — из полного конфига nginx -T (раскрывает include и симлинки sites-enabled),
+  # независимо от того, кто их выпустил (certbot, acme.sh, вручную)
+  NGT=$(nginx -T 2>/dev/null)
+  if [ -z "$NGT" ]; then bad "nginx -T не сработал — конфиг с ошибкой? (nginx -t)" "4"; fi
+  CERTS=$(echo "$NGT" | grep -E '^\s*ssl_certificate\s' | awk '{print $2}' | tr -d ';' | sort -u)
   if [ -n "$CERTS" ]; then
     NOW=$(date +%s)
     while IFS= read -r c; do
