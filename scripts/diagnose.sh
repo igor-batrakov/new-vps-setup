@@ -33,7 +33,10 @@ NP=$(grep -rn NOPASSWD /etc/sudoers /etc/sudoers.d/ 2>/dev/null | grep -vE ':[[:
 if [ -n "$NP" ]; then
   NPFILE=$(echo "$NP" | head -1 | cut -d: -f1)
   NPUSER=$(echo "$NP" | head -1 | cut -d: -f3- | awk '{print $1}')
-  if echo "$NPFILE" | grep -q cloud-init || echo "$NPUSER" | grep -qE '^(ubuntu|debian|admin|root)$'; then
+  if echo "$NPFILE" | grep -q '90-setup-temp'; then
+    EXP=$(systemctl list-timers sudo-temp-expire.timer --no-legend --no-pager 2>/dev/null | awk '{print $1, $2, $3}')
+    bad "временный NOPASSWD режима B ещё стоит ($NPFILE; таймер: ${EXP:-НЕ ВИСИТ — снимать руками}). Сними, если настройка закончена" "1.2"
+  elif echo "$NPFILE" | grep -q cloud-init || echo "$NPUSER" | grep -qE '^(ubuntu|debian|admin|root)$'; then
     bad "дефолтный пользователь хостера с sudo без пароля: $NPUSER ($NPFILE)" "1.2"
   else
     bad "sudo без пароля у $NPUSER ($NPFILE). Если это осознанное решение — зафиксируй в паспорте; скилл рекомендует sudo с паролем" "1.2"
