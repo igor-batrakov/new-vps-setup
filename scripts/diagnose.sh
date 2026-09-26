@@ -168,7 +168,8 @@ TIMERS=$(systemctl list-timers --all --no-legend --no-pager 2>/dev/null | awk '{
 CRONS=$(grep -rlisE 'backup|dump|restic|borg|rclone|health|notify|alert' /etc/cron.d /etc/cron.daily /etc/cron.hourly /etc/cron.weekly /var/spool/cron/crontabs 2>/dev/null \
   | grep -vE '/(dpkg|logrotate|man-db|apt-compat|e2scrub_all|sysstat)$' | paste -sd ' ')
 TOOLS=$(for t in restic borg rclone duplicity; do have $t && printf '%s ' "$t"; done)
-NOTIFIERS=$(find /usr/local/bin -maxdepth 1 -type f -perm -u+x -iregex '.*\(alert\|notify\|tg-\|telegram\)[^.~]*' -printf '%f ' 2>/dev/null)
+NOTIFIERS=$(find /usr/local/bin -maxdepth 1 -type f -perm -u+x -iregex '.*\(alert\|notify\|tg-\|telegram\).*' \
+  -not -name '*.bak*' -not -name '*~' -not -name '*.orig' -not -name '*.old' -printf '%f ' 2>/dev/null)
 
 if have restic && systemctl is-enabled backup-daily.timer >/dev/null 2>&1; then
   ok "схема скилла: restic + backup-daily.timer ($(systemctl list-timers backup-daily.timer --no-legend --no-pager 2>/dev/null | awk '{print "следующий", $1, $2, $3}'))"
