@@ -42,7 +42,9 @@ restic version
 
 ## 3. Секреты — в защищённый файл (не в код, не в git)
 
-`/root/.config/restic/env` (только root, `chmod 600`):
+`/root/.config/restic/env` (только root, `chmod 600`). Команда ниже — для человека в
+терминале; агент пишет этот файл локально и доставляет через `scp` + `install -m 600`
+(SKILL.md, правила для агента, п. 2):
 ```bash
 sudo mkdir -p /root/.config/restic
 sudo tee /root/.config/restic/env >/dev/null <<'EOF'
@@ -102,7 +104,11 @@ restic check --read-data-subset=1/30
 
 # Dead-man's switch: сообщаем healthchecks.io «бэкап прошёл». Сюда доходим только если
 # всё выше отработало (set -e). Нет пинга к сроку → healthchecks сам пришлёт алерт.
-[ -n "${HC_PING_URL:-}" ] && curl -fsS -m 10 --retry 3 "$HC_PING_URL" >/dev/null
+# Именно if, а не «[ ] && curl»: иначе при пустом HC_PING_URL скрипт завершится с кодом 1,
+# systemd сочтёт бэкап упавшим и OnFailure пришлёт ложный «BACKUP FAILED».
+if [ -n "${HC_PING_URL:-}" ]; then
+  curl -fsS -m 10 --retry 3 "$HC_PING_URL" >/dev/null
+fi
 ```
 
 Запусти вручную первый раз и убедись, что прошло без ошибок, а в healthchecks.io check
