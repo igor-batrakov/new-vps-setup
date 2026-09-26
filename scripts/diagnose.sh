@@ -2,6 +2,7 @@
 # diagnose.sh — read-only диагностика Ubuntu VPS с вердиктами (раздел 0 SKILL.md).
 # Ничего не меняет: только читает конфиги и статусы. Запуск: sudo bash diagnose.sh
 # Вывод: [OK] сделано, [!!] надо делать (с номером раздела SKILL.md), [..] справочно.
+# Сервер, настроенный не по этому скиллу, получает [..] «своя схема», а не ложные [!!].
 set -u
 
 if [ "$(id -u)" -ne 0 ]; then
@@ -15,6 +16,7 @@ bad()  { printf '  [!!] %s  -> раздел %s\n' "$1" "$2"; TODO+=("$2|$1"); }
 info() { printf '  [..] %s\n' "$1"; }
 h()    { printf '\n=== %s ===\n' "$*"; }
 have() { command -v "$1" >/dev/null 2>&1; }
+ind()  { sed 's/^/       /'; }
 
 # ---------------------------------------------------------------- система
 h "Система"
@@ -27,9 +29,15 @@ h "Пользователи и sudo"
 info "скрипт запустил: ${SUDO_USER:-root}"
 SUDOERS=$(getent group sudo | cut -d: -f4)
 if [ -n "$SUDOERS" ]; then ok "в группе sudo: $SUDOERS"; else bad "нет ни одного sudo-пользователя, работа только под root" "1.2"; fi
-NP=$(grep -rn NOPASSWD /etc/sudoers /etc/sudoers.d/ 2>/dev/null | grep -v '^\s*#' | grep -v ':#')
+NP=$(grep -rn NOPASSWD /etc/sudoers /etc/sudoers.d/ 2>/dev/null | grep -vE ':[[:space:]]*#')
 if [ -n "$NP" ]; then
-  bad "sudo без пароля (дефолтный пользователь хостера?): $(echo "$NP" | head -1 | cut -c1-70)" "1.2"
+  NPFILE=$(echo "$NP" | head -1 | cut -d: -f1)
+  NPUSER=$(echo "$NP" | head -1 | cut -d: -f3- | awk '{print $1}')
+  if echo "$NPFILE" | grep -q cloud-init || echo "$NPUSER" | grep -qE '^(ubuntu|debian|admin|root)$'; then
+    bad "дефолтный пользователь хостера с sudo без пароля: $NPUSER ($NPFILE)" "1.2"
+  else
+    bad "sudo без пароля у $NPUSER ($NPFILE). Если это осознанное решение — зафиксируй в паспорте; скилл рекомендует sudo с паролем" "1.2"
+  fi
 else
   ok "NOPASSWD в sudoers нет"
 fi
@@ -40,12 +48,13 @@ done
 
 # ---------------------------------------------------------------- ssh
 h "SSH (эффективные значения, sshd -T)"
-SSHT=$(sshd -T 2>/dev/null)
+# -C нужен: при любом Match в конфиге sshd -T без него завершается с ошибкой и пустым выводом
+SSHT=$(sshd -T -C user=root,host=localhost,addr=127.0.0.1,lport=22 2>/dev/null)
 if [ -z "$SSHT" ]; then
   bad "sshd -T не сработал — конфиг сломан? смотри journalctl -u ssh" "10"
 else
   val() { echo "$SSHT" | awk -v k="$1" '$1==k{print $2}'; }
-  P=$(val port); info "порт: $P"
+  info "порт: $(val port | tr '\n' ' ')"
   if [ "$(val permitrootlogin)" = "no" ]; then ok "PermitRootLogin no"; else bad "PermitRootLogin $(val permitrootlogin)" "1.4"; fi
   if [ "$(val passwordauthentication)" = "no" ]; then ok "PasswordAuthentication no"; else bad "PasswordAuthentication $(val passwordauthentication) — вход по паролю открыт" "1.4"; fi
   AU=$(echo "$SSHT" | awk '$1=="allowusers"{print $2}' | tr '\n' ' ')
@@ -65,17 +74,21 @@ if have ufw; then
   UFWS=$(ufw status verbose 2>/dev/null)
   if echo "$UFWS" | grep -q '^Status: active'; then ok "UFW активен"; else bad "UFW не активен" "2"; fi
   if echo "$UFWS" | grep -q 'Default: deny (incoming)'; then ok "по умолчанию входящие закрыты"; else bad "входящие по умолчанию НЕ закрыты" "2"; fi
-  echo "$UFWS" | grep -E '^[0-9]|ALLOW|DENY' | sed 's/^/       /' | head -20
+  RULES=$(echo "$UFWS" | grep -E 'ALLOW|DENY|REJECT|LIMIT' | grep -v '(v6)')
+  N=$(echo "$RULES" | grep -c .)
+  info "правил: $N (IPv6-дубли скрыты)"
+  echo "$RULES" | ind
+  have docker && info "Docker публикует порты в обход UFW — смотри раздел «Открытые порты» и цепочку DOCKER-USER"
 else
   bad "ufw не установлен" "2"
 fi
 
 # ---------------------------------------------------------------- порты
-h "Открытые порты (слушают на всех интерфейсах = доступны снаружи)"
+h "Открытые порты (слушают не на loopback; снаружи доступны, если пропускает UFW/DOCKER-USER)"
 PUB=$(ss -tlnpH 2>/dev/null | awk '$4 !~ /^(127\.|\[::1\])/ {print $4, $6}' | sed 's/users:(("//; s/",.*//' | sort -u)
-if [ -n "$PUB" ]; then echo "$PUB" | sed 's/^/       /'; else info "снаружи ничего не слушает"; fi
-for port in 5432 3306 6379 27017 9200 8080 3000 5000; do
-  if echo "$PUB" | grep -qE ":$port "; then bad "порт $port открыт наружу (БД/приложение должно быть на 127.0.0.1)" "3"; fi
+if [ -n "$PUB" ]; then echo "$PUB" | ind; else info "вне loopback ничего не слушает"; fi
+for port in 5432 3306 6379 27017 9200; do
+  if echo "$PUB" | grep -qE '^(0\.0\.0\.0|\[::\]|\*):'"$port "; then bad "порт БД $port слушает на всех интерфейсах (должен быть на 127.0.0.1)" "3"; fi
 done
 
 # ---------------------------------------------------------------- обновления
@@ -106,18 +119,17 @@ if echo "$TD" | grep -qi 'synchronized: yes'; then ok "часы синхрони
 h "fail2ban"
 if have fail2ban-client; then
   if fail2ban-client status sshd >/dev/null 2>&1; then
-    ok "jail sshd активен: $(fail2ban-client status sshd 2>/dev/null | grep -E 'Currently banned' | sed 's/^ *[|`]*- *//')"
+    ok "jail sshd работает: $(fail2ban-client status sshd 2>/dev/null | grep -E 'Currently banned' | sed 's/^ *[|`]*- *//')"
   else
-    bad "fail2ban установлен, но jail sshd не работает (journalctl -u fail2ban)" "1.6"
+    bad "fail2ban установлен, но jail sshd не работает — проверь backend = systemd (journalctl -u fail2ban)" "1.6"
   fi
-  if grep -rqs '^backend *= *systemd' /etc/fail2ban/jail.d/; then ok "backend = systemd"; else bad "backend = systemd не задан в jail.d (на 24.04+ без rsyslog jail упадёт)" "1.6"; fi
 else
   bad "fail2ban не установлен" "1.6"
 fi
 
 # ---------------------------------------------------------------- диск / журнал / swap
 h "Диск, журнал, swap"
-df -h -x tmpfs -x devtmpfs -x squashfs -x overlay 2>/dev/null | sed 's/^/       /'
+df -h -x tmpfs -x devtmpfs -x squashfs -x overlay 2>/dev/null | ind
 DU=$(df / | awk 'END{print $5+0}')
 if [ "$DU" -gt 85 ]; then bad "диск / занят на ${DU}%" "6"; fi
 info "journald: $(journalctl --disk-usage 2>/dev/null | sed 's/Archived and active journals take up //')"
@@ -136,7 +148,7 @@ info "/tmp: $(findmnt -no FSTYPE /tmp 2>/dev/null || echo 'на корневом
 h "Docker"
 if have docker; then
   info "$(docker --version 2>/dev/null)"
-  docker ps --format '       {{.Names}}  {{.Ports}}' 2>/dev/null
+  docker ps --format '{{.Names}}  {{.Ports}}' 2>/dev/null | ind
   if grep -qs 'max-size' /etc/docker/daemon.json; then ok "лог-ротация настроена"; else bad "daemon.json без max-size — логи контейнеров съедят диск" "3"; fi
   NR=$(docker ps -q 2>/dev/null | xargs -r docker inspect --format '{{.Name}} {{.HostConfig.RestartPolicy.Name}}' 2>/dev/null | grep -vE ' (unless-stopped|always)$')
   [ -n "$NR" ] && bad "контейнеры без restart-политики (не поднимутся после reboot): $(echo "$NR" | awk '{print $1}' | tr -d / | tr '\n' ' ')" "3"
@@ -146,29 +158,61 @@ fi
 
 # ---------------------------------------------------------------- бэкапы и алерты
 h "Бэкапы и алерты"
-if have restic; then ok "restic: $(restic version 2>/dev/null | awk '{print $2}')"; else bad "restic не установлен" "5"; fi
-if systemctl is-enabled backup-daily.timer >/dev/null 2>&1; then
-  ok "backup-daily.timer включён: $(systemctl list-timers backup-daily.timer --no-legend --no-pager 2>/dev/null | awk '{print "следующий", $1, $2, $3}')"
+# Схема скилла: restic + backup-daily.timer + backup-failed.service + HC_PING_URL + tg-alert + healthcheck cron.
+# Другая схема: любые таймеры/крон с backup|dump|health|heartbeat|notify|alert в имени → [..], не [!!].
+TIMERS=$(systemctl list-timers --all --no-legend --no-pager 2>/dev/null | awk '{print $(NF-1)}' | grep -iE 'backup|dump|health|heartbeat|notify|alert|snapshot' | sort -u | tr '\n' ' ')
+CRONS=$(grep -rlisE 'backup|dump|restic|borg|rclone|health|notify|alert' /etc/cron.d /etc/cron.daily /etc/cron.hourly /etc/cron.weekly /var/spool/cron/crontabs 2>/dev/null | tr '\n' ' ')
+TOOLS=$(for t in restic borg rclone duplicity; do have $t && printf '%s ' "$t"; done)
+NOTIFIERS=$(find /usr/local/bin -maxdepth 1 -type f -iregex '.*\(alert\|notify\|tg-\|telegram\).*' -printf '%f ' 2>/dev/null)
+
+if have restic && systemctl is-enabled backup-daily.timer >/dev/null 2>&1; then
+  ok "схема скилла: restic + backup-daily.timer ($(systemctl list-timers backup-daily.timer --no-legend --no-pager 2>/dev/null | awk '{print "следующий", $1, $2, $3}'))"
+  if systemctl cat backup-failed.service >/dev/null 2>&1; then ok "backup-failed.service есть"; else bad "нет алерта о падении бэкапа (backup-failed.service)" "5"; fi
+  if grep -qs 'HC_PING_URL=' /root/.config/restic/env; then ok "healthchecks.io ping задан"; else bad "нет dead-man's switch (HC_PING_URL)" "5"; fi
+elif [ -n "$TIMERS$CRONS$TOOLS" ]; then
+  info "своя схема бэкапов — таймеры: ${TIMERS:-нет}; cron: ${CRONS:-нет}; инструменты: ${TOOLS:-нет}"
+  info "сверь с принципами раздела 5: offsite, проверенное восстановление, алерт при падении, dead-man's switch"
 else
-  bad "таймер backup-daily.timer не настроен" "5"
+  bad "бэкапов не видно: нет restic/borg/rclone и ни одного таймера или cron с backup в имени" "5"
 fi
-if systemctl cat backup-failed.service >/dev/null 2>&1; then ok "backup-failed.service есть"; else bad "нет алерта о падении бэкапа (backup-failed.service)" "5"; fi
-if grep -qs 'HC_PING_URL=' /root/.config/restic/env; then ok "healthchecks.io ping задан"; else bad "нет dead-man's switch (HC_PING_URL)" "5"; fi
-if [ -x /usr/local/bin/tg-alert ]; then ok "tg-alert есть"; else bad "нет tg-alert (канал алертов)" "6"; fi
-if [ -f /etc/cron.d/healthcheck ]; then ok "healthcheck cron есть"; else bad "нет healthcheck.sh в cron" "6"; fi
+
+if [ -x /usr/local/bin/tg-alert ]; then
+  ok "tg-alert есть"
+elif [ -n "$NOTIFIERS" ]; then
+  info "свой канал алертов: /usr/local/bin/{${NOTIFIERS% }} — проверь, что тестовое сообщение доходит"
+else
+  bad "нет канала алертов (tg-alert или аналог)" "6"
+fi
+if [ -f /etc/cron.d/healthcheck ]; then
+  ok "healthcheck.sh в cron есть"
+elif echo "$TIMERS $CRONS" | grep -qiE 'health|heartbeat'; then
+  info "своя проверка здоровья: $(echo "$TIMERS $CRONS" | tr ' ' '\n' | grep -iE 'health|heartbeat' | tr '\n' ' ')"
+else
+  bad "нет проверки ресурсов (healthcheck.sh) — диск/память/упавшие сервисы никто не заметит" "6"
+fi
 
 # ---------------------------------------------------------------- сервисы / веб
 h "Упавшие сервисы"
 FAILED=$(systemctl --failed --no-pager --no-legend --plain 2>/dev/null | awk '{print $1}' | tr '\n' ' ')
 if [ -n "$FAILED" ]; then bad "упавшие юниты: $FAILED (journalctl -u <unit>)" "8"; else ok "упавших сервисов нет"; fi
 
-h "Веб"
+h "Веб и HTTPS"
 if have nginx; then
   info "$(nginx -v 2>&1), sites-enabled: $(ls /etc/nginx/sites-enabled/ 2>/dev/null | tr '\n' ' ')"
-  if have certbot; then
-    certbot certificates 2>/dev/null | grep -E 'Certificate Name|Expiry' | sed 's/^ */       /'
+  # Сертификаты — из nginx-конфигов, независимо от того, кто их выпустил (certbot, acme.sh, вручную)
+  CERTS=$(grep -rhoE '^\s*ssl_certificate\s+[^;]+' /etc/nginx/sites-enabled /etc/nginx/conf.d 2>/dev/null | awk '{print $2}' | sort -u)
+  if [ -n "$CERTS" ]; then
+    NOW=$(date +%s)
+    while IFS= read -r c; do
+      [ -f "$c" ] || { bad "ssl_certificate $c не найден на диске" "4"; continue; }
+      END=$(openssl x509 -in "$c" -noout -enddate 2>/dev/null | cut -d= -f2)
+      ENDS=$(date -d "$END" +%s 2>/dev/null || echo 0)
+      DAYS=$(( (ENDS - NOW) / 86400 ))
+      if [ "$DAYS" -lt 14 ]; then bad "сертификат $c истекает через $DAYS дн. — автопродление не работает?" "4"; else ok "сертификат $(basename "$(dirname "$c")")/$(basename "$c"): ещё $DAYS дн."; fi
+    done <<< "$CERTS"
+    if have certbot; then info "выпуск: certbot"; elif [ -d /root/.acme.sh ]; then info "выпуск: acme.sh"; else info "выпуск: не certbot и не acme.sh — проверь, кто продлевает"; fi
   else
-    bad "nginx есть, certbot нет — HTTPS не настроен?" "4"
+    bad "nginx без ssl_certificate — HTTPS не настроен?" "4"
   fi
 else
   info "nginx не установлен"
@@ -179,7 +223,7 @@ h "Паспорт сервера"
 if [ -f /root/server-notes.md ]; then
   ok "/root/server-notes.md есть (обновлён $(date -r /root/server-notes.md +%F)) — прочитай его перед настройкой"
 else
-  bad "паспорта сервера нет" "9.3"
+  bad "паспорта сервера нет (если карточка сервера ведётся вне сервера — это допустимо, отметь в ней)" "9.3"
 fi
 
 # ---------------------------------------------------------------- итог
