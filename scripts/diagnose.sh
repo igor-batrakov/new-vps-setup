@@ -185,8 +185,12 @@ TOOLS=$(for t in restic borg rclone duplicity; do have $t && printf '%s ' "$t"; 
 NOTIFIERS=$(find /usr/local/bin /usr/local/sbin -maxdepth 1 -type f -perm -u+x -iregex '.*\(alert\|notify\|tg-\|telegram\|ntfy\).*' \
   -not -name '*.bak*' -not -name '*~' -not -name '*.orig' -not -name '*.old' -printf '%f ' 2>/dev/null)
 # Push-мониторинг (heartbeat в Gatus/healthchecks/ntfy вместо локального отправителя): ищем по содержимому
-PUSH=$(grep -rlisE 'gatus|heartbeat|healthchecks|hc-ping|api\.telegram\.org|ntfy\.sh|pushover' \
-  /usr/local/bin /usr/local/sbin /etc/systemd/system /etc/restic /root/.config/restic 2>/dev/null | sed 's|.*/||' | sort -u | head -8 | paste -sd ' ')
+PUSH_ALL=$(grep -rlisE 'gatus|heartbeat|healthchecks|hc-ping|api\.telegram\.org|ntfy\.sh|pushover' \
+  --exclude='*.bak*' --exclude='*~' --exclude='*.orig' --exclude='*.old' \
+  /usr/local/bin /usr/local/sbin /etc/systemd/system /etc/restic /root/.config/restic 2>/dev/null | sed 's|.*/||' | sort -u)
+PUSH_N=$(echo "$PUSH_ALL" | grep -c .)
+PUSH=$(echo "$PUSH_ALL" | head -10 | paste -sd ' ')
+[ "$PUSH_N" -gt 10 ] && PUSH="$PUSH … и ещё $((PUSH_N - 10))"
 
 if have restic && systemctl is-enabled backup-daily.timer >/dev/null 2>&1; then
   ok "схема скилла: restic + backup-daily.timer ($(systemctl list-timers backup-daily.timer --no-legend --no-pager 2>/dev/null | awk '{print "следующий", $1, $2, $3}'))"
