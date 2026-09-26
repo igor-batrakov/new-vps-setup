@@ -35,7 +35,11 @@ if [ -n "$NP" ]; then
   NPUSER=$(echo "$NP" | head -1 | cut -d: -f3- | awk '{print $1}')
   if echo "$NPFILE" | grep -q '90-setup-temp'; then
     EXP=$(systemctl list-timers sudo-temp-expire.timer --no-legend --no-pager 2>/dev/null | awk '{print $1, $2, $3}')
-    bad "временный NOPASSWD режима B ещё стоит ($NPFILE; таймер: ${EXP:-НЕ ВИСИТ — снимать руками}). Сними, если настройка закончена" "1.2"
+    if [ -n "$EXP" ]; then
+      info "режим B: временный NOPASSWD активен до $EXP — снять до чеклиста 9.4 (правила для агента, п. 5)"
+    else
+      bad "временный NOPASSWD режима B остался ($NPFILE), а таймер снятия НЕ ВИСИТ (перезагрузка?) — снять руками" "1.2"
+    fi
   elif echo "$NPFILE" | grep -q cloud-init || echo "$NPUSER" | grep -qE '^(ubuntu|debian|admin|root)$'; then
     bad "дефолтный пользователь хостера с sudo без пароля: $NPUSER ($NPFILE)" "1.2"
   else
@@ -108,22 +112,19 @@ done
 
 # ---------------------------------------------------------------- обновления
 h "Автообновления"
-if dpkg -s unattended-upgrades >/dev/null 2>&1 && grep -qs 'Unattended-Upgrade "1"' /etc/apt/apt.conf.d/20auto-upgrades; then
-  ok "unattended-upgrades включён"
+# Три условия сразу: пакет реально установлен (образы хостеров бывают с "deinstall ok config-files"
+# при лежащем конфиге), оба таймера apt включены, конфиг говорит "1"
+UU_PKG=$(dpkg-query -W -f='${Status}' unattended-upgrades 2>/dev/null)
+UU_T1=$(systemctl is-enabled apt-daily.timer 2>/dev/null)
+UU_T2=$(systemctl is-enabled apt-daily-upgrade.timer 2>/dev/null)
+if [ "$UU_PKG" = "install ok installed" ] && [ "$UU_T1" = enabled ] && [ "$UU_T2" = enabled ] \
+   && grep -qs 'Unattended-Upgrade "1"' /etc/apt/apt.conf.d/20auto-upgrades; then
+  ok "unattended-upgrades установлен, таймеры apt-daily* enabled, конфиг \"1\""
 else
-  bad "unattended-upgrades не установлен или не включён" "1.5"
+  bad "автообновления не работают: пакет «${UU_PKG:-нет}», apt-daily.timer «${UU_T1:-нет}», apt-daily-upgrade.timer «${UU_T2:-нет}»" "1.5"
 fi
 AR=$(grep -E '^Unattended-Upgrade::Automatic-Reboot ' /etc/apt/apt.conf.d/50unattended-upgrades 2>/dev/null | grep -o '"[a-z]*"')
 info "автоперезагрузка: ${AR:-не задана (по умолчанию false)}"
-if have pro; then
-  if timeout 15 pro status 2>/dev/null | grep -qE '^esm-apps +yes +enabled'; then
-    ok "Ubuntu Pro: esm-apps enabled"
-  else
-    bad "Ubuntu Pro не подключён — security-патчи для universe (fail2ban, restic, certbot) не приходят" "1.5"
-  fi
-else
-  bad "ubuntu-pro-client не установлен — Ubuntu Pro (ESM для universe) не подключён" "1.5"
-fi
 info "доступно обновлений (локальный кэш apt): $(apt list --upgradable 2>/dev/null | grep -c upgradable)"
 
 # ---------------------------------------------------------------- время

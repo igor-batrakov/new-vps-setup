@@ -8,7 +8,7 @@ description: >
   прода. Также при задачах: автообновления безопасности, настройка файрвола, бэкапы, защита SSH,
   чеклист готовности к проду, регулярное обслуживание сервера, потерян доступ по SSH,
   восстановление сервера из бэкапа.
-  Ключевые слова: hardening Ubuntu, unattended-upgrades, Ubuntu Pro, UFW, fail2ban, SSH-ключи,
+  Ключевые слова: hardening Ubuntu, unattended-upgrades, UFW, fail2ban, SSH-ключи,
   restic, offsite, Docker, nginx, HTTPS, Let's Encrypt, мониторинг, healthchecks, восстановление
   из бэкапа, заперся на сервере, lynis, ssh-audit.
 ---
@@ -54,7 +54,9 @@ description: >
 
 ## Золотые правила (перед ЛЮБЫМ изменением)
 
-1. **Бэкап конфига:** `sudo cp /path/config /path/config.bak.$(date +%F-%H%M)`
+1. **Бэкап конфига — вне его каталога:** `sudo mkdir -p /root/config-bak && sudo cp -a /path/config /root/config-bak/config.$(date +%F-%H%M)`.
+   Копия рядом (`config.bak.…`) в каталогах `*.d/` либо подхватывается как настоящий конфиг
+   (`x.bak.conf` в `sshd_config.d`), либо шумит в логах (`apt` ругается на каждый запуск).
 2. **Проверь состояние:** `sudo systemctl status <service>` / `sudo docker ps`
 3. **После изменения — проверь результат** (логи, статус, тестовое подключение).
 4. **Никогда не закрывай текущую SSH-сессию**, пока в **новой** сессии не убедился, что
@@ -98,23 +100,24 @@ ssh <alias> 'bash /tmp/s.sh'                   # запустить (или sudo
 на число файлов, строк, байт или текст внутри: `sshd -T | grep passwordauthentication` должен
 показать `no`, а не «команда завершилась без ошибки».
 
-**4. Ручные шаги: где их выполняет пользователь.** Инструмент Bash у агента не имеет
-терминала ни в одной среде: ввести пароль ssh, пароль sudo или passphrase ключа через него
-нельзя (`ssh <alias> sudo …` упадёт с «a terminal is required»). Таких шагов три: первый
-`ssh-copy-id` с паролем хостера (1.1), `ssh-keygen` с passphrase (1.1), sudo-пароль в режиме A
-(ниже). Агент **готовит команду и говорит, где её запустить**, в зависимости от среды:
+**4. Ручные шаги — только в отдельном окне терминала, в любой среде.** У инструмента Bash
+агента нет терминала. **У префикса `!` в Claude Code CLI его тоже нет:** `! ssh root@IP …`
+не покажет приглашение пароля и получит `Permission denied` (проверено на живом прогоне
+26.09.2026). Поэтому три шага, где вводится пароль или passphrase, пользователь делает в
+отдельном окне терминала: `ssh-keygen` и первый `ssh-copy-id` с паролем хостера (1.1),
+sudo-пароль в режиме A (п. 5). Как открыть это окно:
 
-| Где запущен агент | Как выполнить ручную команду |
+| Среда | Отдельное окно терминала |
 |---|---|
-| **Claude Code CLI** в терминале (в т.ч. `claude` в интегрированном терминале VS Code или JetBrains) | В строке ввода агента: `! команда`. Выполняется в твоём терминале, вывод виден агенту |
-| **Claude Desktop** | Панель терминала: ``Ctrl+` `` или меню. Та же команда **без** `!` — в чате Desktop префикс не работает |
-| **Расширение Claude Code в VS Code** (панель) | Интегрированный терминал VS Code: ``Cmd+` `` (macOS) / ``Ctrl+` `` (Windows, Linux). Та же команда без `!`. Хочешь `!` — запусти в этом терминале `claude` |
-| **Codex CLI, Gemini CLI, Copilot CLI** | `! команда` есть во всех трёх. Если ввод пароля через него не проходит — отдельное окно терминала |
-| **Любая другая среда** | Отдельное окно терминала |
+| **Claude Code CLI** (Terminal, iTerm, Windows Terminal) | Новое окно: `Cmd+N` (macOS), `Ctrl+Shift+N` (Windows Terminal) |
+| **Claude Desktop** | Панель терминала: ``Ctrl+` `` или меню |
+| **VS Code** (расширение или CLI в терминале) | Интегрированный терминал ``Cmd+` `` / ``Ctrl+` ``, второй экземпляр через «+» |
+| **JetBrains** | Вкладка Terminal внизу IDE |
+| **Codex / Gemini / Copilot CLI** | Новое окно терминала. Их `!` на ввод пароля не проверялся — не рассчитывать |
 
-Во всех случаях агент **проверяет результат сам, по ключу, неинтерактивно** (например
-`ssh -o BatchMode=yes … id`, `passwd -S`), а не полагается на вставленный пользователем вывод.
-Так путь не зависит от того, куда ушёл вывод команды.
+Агент даёт команду одной строкой, предупреждает, что **при вводе пароля символы не
+отображаются** (это норма, а не зависание), ждёт «готово» и **проверяет результат сам, по
+ключу, неинтерактивно** (`ssh -o BatchMode=yes … id`, `passwd -S`), а не по вставленному выводу.
 
 **5. `sudo` с паролем и агент — режим выбирает пользователь, один раз, в начале.** Пока сервер
 отдан как root по ключу (до раздела 1.4) — агент работает root'ом напрямую, вопроса нет.
@@ -123,7 +126,7 @@ ssh <alias> 'bash /tmp/s.sh'                   # запустить (или sudo
 
 | | Режим A — безопасный | Режим B — быстрый |
 |---|---|---|
-| Как | Агент готовит скрипт, пользователь запускает его в своём терминале (таблица в п. 4): `ssh -t <alias> sudo bash /tmp/s.sh` и вводит пароль | Временный NOPASSWD для `<USERNAME>` отдельным файлом **с таймером самоудаления через 4 часа**. Агент выполняет `ssh <alias> sudo bash /tmp/s.sh` сам |
+| Как | Агент готовит скрипт, пользователь запускает его в отдельном окне терминала (таблица в п. 4): `ssh -t <alias> sudo bash /tmp/s.sh` и вводит пароль | Временный NOPASSWD для `<USERNAME>` отдельным файлом **с таймером самоудаления через 4 часа**. Агент выполняет `ssh <alias> sudo bash /tmp/s.sh` сам |
 | Цена | Каждый sudo-шаг — руками, пароль вводить по нескольку раз за раздел. Медленнее в 2–3 раза; в панели Desktop/VS Code ещё и переключение в терминал на каждый шаг | На время настройки ключ SSH = root без пароля. Ошибка агента или компрометация ноутбука в это окно не упрётся в барьер пароля |
 | Кому | Первый раз; сервер с данными или трафиком; чужой сервер | Чистый сервер без данных, настройка в один присест, пользователь рядом. В панели Desktop/VS Code — обычно разумный выбор |
 | Конец | — | Снять до чеклиста 9.4; диагностика и чеклист ловят забытый файл |
@@ -133,7 +136,9 @@ ssh <alias> 'bash /tmp/s.sh'                   # запустить (или sudo
 ключ равен root без барьера. Есть безопасный: каждую sudo-команду запускаешь сам в своём
 терминале, пароль остаётся у тебя, медленнее и больше ручной работы. Какой?» Без ответа — режим A.
 
-**Режим B, включение** — единственный раз в терминале пользователя, дальше агент работает сам:
+**Режим B, включение** — единственный раз в отдельном окне терминала пользователя, дальше
+агент работает сам. Пока сервер ещё отдан как root по ключу, агент может положить файл сам
+(тогда `ssh root@… bash /tmp/sudo-temp-on.sh <USERNAME>`):
 ```bash
 #!/bin/bash
 # sudo-temp-on.sh <USERNAME> — временный NOPASSWD на время настройки, сам снимется через 4 часа
@@ -144,14 +149,19 @@ printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$U" > /tmp/90-setup-temp
 visudo -cf /tmp/90-setup-temp        # ОБЯЗАТЕЛЬНО: файл с ошибкой ломает sudo целиком
 install -m 440 -o root -g root /tmp/90-setup-temp "$F"
 systemctl stop sudo-temp-expire.timer 2>/dev/null || true
-systemd-run --unit=sudo-temp-expire --on-active=4h /bin/rm -f "$F"
-echo "NOPASSWD для $U включён, снимется сам в $(date -d '+4 hours' '+%H:%M')"
+# Абсолютное время, не --on-active: относительный таймер перевзводится каждым daemon-reload
+# (любой apt install во время настройки), и срок молча уезжает
+EXP=$(date -d '+4 hours' '+%F %T')
+systemd-run --unit=sudo-temp-expire --on-calendar="$EXP" /bin/rm -f "$F"
+echo "NOPASSWD для $U включён, снимется сам в $EXP"
 ```
 ```bash
-ssh -t <alias> sudo bash /tmp/sudo-temp-on.sh <USERNAME>      # в CLI: с префиксом `!`
+ssh -t <alias> sudo bash /tmp/sudo-temp-on.sh <USERNAME>
 ```
 Проверка агентом: `ssh <alias> 'sudo -n true && echo sudo-ok'` → `sudo-ok`. Если таймер
-истёк посреди настройки — попросить включить снова, не продлевать молча.
+истёк посреди настройки — попросить включить снова, не продлевать молча. **Перезагрузка
+убивает транзитный таймер, а файл остаётся:** после любого reboot в режиме B проверить
+`systemctl list-timers sudo-temp-expire.timer` и при пустом выводе снять NOPASSWD руками.
 
 **Режим B, выключение** — в конце уровня 2 (или уровня 1, если дальше не идёшь), до чеклиста:
 ```bash
@@ -191,10 +201,10 @@ sudo -k && sudo -n true 2>&1 | head -1     # ожидаемо: sudo: a password 
 
 | # | Проверка | Как | Не выполнено → |
 |---|----------|-----|----------------|
-| 1 | **Консоль провайдера открыта** в браузере (VNC / Serial / Rescue) и ты знаешь пароль root или sudo-пользователя | Открыть вкладку панели хостера, проверить, что консоль показывает приглашение логина | СТОП. Найти консоль. Без неё ошибка = потеря сервера |
-| 2 | **Вторая SSH-сессия открыта** и живёт | Второе окно терминала с `ssh <alias>` | СТОП. Открыть |
+| 1 | **Консоль провайдера открыта и в ней выполнен вход.** Это «экран сервера» в браузере (VNC / Serial): работает, даже когда SSH сломан | Панель хостера → карточка сервера → кнопка «Консоль» / «VNC». Дождаться приглашения `<hostname> login:`, войти как `root` с паролем из 1.2 (набирать руками: вставка из буфера в VNC часто не работает, символы при вводе не видны). Увидеть `root@<hostname>:~#` и оставить вкладку открытой. **Проверка агентом:** `loginctl list-sessions` показывает сессию `root` на `tty1` | СТОП. Без работающей консоли ошибка = потеря сервера |
+| 2 | **Вторая SSH-сессия открыта и живёт** | Новое окно терминала (правила для агента, п. 4) → `ssh <alias>` → приглашение `<USERNAME>@<hostname>:~$`. В этом окне ничего не вводить и не закрывать его до конца шага: если основная сессия сломается, чинить отсюда. **Проверка агентом:** `loginctl list-sessions` показывает не меньше двух SSH-сессий пользователя | СТОП. Открыть |
 | 3 | **Вход по ключу проверен новой сессией** (для шагов, отключающих пароль) | `ssh -o BatchMode=yes -o IdentitiesOnly=yes -i ~/.ssh/<key> <USERNAME>@<SERVER_IP> 'id; sudo -n true 2>&1 \| head -1'` → видишь `uid=…` и `sudo: a password is required` (это норма, значит sudo есть; в режиме B вторая строка пустая) | СТОП. Ключ не работает — раздел 1.3 |
-| 4 | **Бэкап конфигов** | `sudo cp -a /etc/ssh /etc/ssh.bak.$(date +%F-%H%M)`; для UFW: `sudo cp -a /etc/ufw /etc/ufw.bak.$(date +%F-%H%M)` | Сделать |
+| 4 | **Бэкап конфигов — вне `/etc`** | `sudo mkdir -p /root/config-bak && sudo cp -a /etc/ssh /root/config-bak/ssh.$(date +%F-%H%M)`; для UFW: `sudo cp -a /etc/ufw /root/config-bak/ufw.$(date +%F-%H%M)` | Сделать |
 | 5 | **Таймер авто-отката взведён ДО копирования файла** | см. ниже. Под `ssh.socket` новый drop-in действует на **следующее подключение даже без restart** — значит, «положу файл, потом взведу» уже опасно | Взвести |
 | 6 | **Синтаксис проверен сразу после копирования** | `sudo sshd -t` (пустой вывод = ОК). Ошибка → убрать файл немедленно, до любого restart | Чинить |
 | 7 | **Новый порт / свой IP открыты заранее** | Смена порта: `sudo ufw allow <PORT>/tcp` до `restart ssh.socket`. fail2ban: свой IP в `ignoreip` (узнать: `curl -s ifconfig.me`) | Сделать |
@@ -204,12 +214,16 @@ sudo -k && sudo -n true 2>&1 | head -1     # ожидаемо: sudo: a password 
 может оказаться фатальным.
 
 ```bash
-# Для правки sshd (откатит через 5 минут, если не отменить):
-sudo systemd-run --unit=ssh-rollback --on-active=300 \
-  /bin/sh -c 'rm -f /etc/ssh/sshd_config.d/99-hardening.conf; systemctl restart ssh.socket ssh.service'
+# Абсолютное время (--on-calendar), не --on-active: относительный таймер перевзводится каждым
+# daemon-reload — apt install между «взвёл» и «проверил» молча отодвинул бы откат
+T=$(date -d '+5 min' '+%F %T')
+
+# Для правки sshd (откатит в $T, если не отменить):
+sudo systemd-run --unit=ssh-rollback --on-calendar="$T" \
+  /bin/sh -c 'rm -f /etc/ssh/sshd_config.d/00-hardening.conf; systemctl restart ssh.socket ssh.service'
 
 # Для включения UFW:
-sudo systemd-run --unit=ufw-rollback --on-active=300 /usr/sbin/ufw disable
+sudo systemd-run --unit=ufw-rollback --on-calendar="$T" /usr/sbin/ufw disable
 
 # ... применить изменение, открыть НОВУЮ сессию, убедиться что вход и sudo работают ...
 
@@ -221,6 +235,8 @@ sudo systemctl stop ufw-rollback.timer
 > висит: `sudo systemctl stop ssh-rollback.timer` и взвести заново.
 > `sshd -t` ловит синтаксис, но **не** ловит «ни один клиент не сможет договориться» (например,
 > об алгоритмах) — таймер и консоль провайдера остаются последним рубежом.
+> Таймер транзитный: перезагрузка его убивает. В окне 5 минут это маловероятно, но если
+> сервер перезагрузился между «взвёл» и «проверил» — считай, что отката нет, и иди в консоль.
 
 **Что заперло доступ, если всё же случилось — раздел 10.**
 
@@ -239,8 +255,14 @@ sudo systemctl stop ufw-rollback.timer
 ```bash
 scp scripts/diagnose.sh <USERNAME>@<SERVER_IP>:/tmp/
 ssh -t <USERNAME>@<SERVER_IP> sudo bash /tmp/diagnose.sh
-# пока сервер отдан как root: ssh root@<SERVER_IP> bash /tmp/diagnose.sh
+# пока сервер отдан как root по ключу: ssh root@<SERVER_IP> bash -s < scripts/diagnose.sh
 ```
+
+**На чистом сервере, где ключа ещё нет,** агент подключиться не может: вход только по паролю
+хостера. Два пути: сначала сделать 1.1 (ключ, одна команда `ssh-copy-id`) и вернуться сюда,
+либо пользователь запускает диагностику сам в отдельном окне терминала, введя пароль:
+`ssh root@<SERVER_IP> 'bash -s' < scripts/diagnose.sh`. Первый путь короче: пароль хостера
+вводится один раз, а не дважды.
 
 **Или руками** — те же проверки:
 ```bash
@@ -265,9 +287,10 @@ sudo ufw status verbose
 # Что слушает порты
 sudo ss -tlnp
 
-# Автообновления (включены?) и Ubuntu Pro (ESM подключён?)
+# Автообновления: пакет установлен, таймеры включены, конфиг "1" — нужны все три
+dpkg-query -W -f='${Status}\n' unattended-upgrades 2>/dev/null   # install ok installed
+systemctl is-enabled apt-daily.timer apt-daily-upgrade.timer      # enabled, enabled
 cat /etc/apt/apt.conf.d/20auto-upgrades 2>/dev/null
-pro status 2>/dev/null | grep -E 'esm-apps|esm-infra'
 
 # Время синхронизируется? (иначе сертификаты и логи «поедут»)
 timedatectl | grep -iE 'synchronized|NTP service'
@@ -285,7 +308,7 @@ systemctl --failed
 |-------|--------------|
 | `PasswordAuthentication yes`, `PermitRootLogin yes`, нет `AllowUsers` | 1.3 → 1.4 |
 | NOPASSWD у `ubuntu`/`debian`/`admin` | 1.2 |
-| Нет `20auto-upgrades` или `Unattended-Upgrade "0"`; ESM не подключён | 1.5 |
+| Пакет `unattended-upgrades` не `installed`, таймеры `apt-daily*` не `enabled`, или `Unattended-Upgrade "0"` | 1.5 |
 | fail2ban не установлен / jail sshd не активен | 1.6 |
 | `synchronized: no`, нет swap при RAM < 2 ГБ, journald без лимита | 1.7 |
 | UFW `inactive` или `Default: allow (incoming)` | 2 |
@@ -312,20 +335,39 @@ systemctl --failed
 приглашении ssh и больше нигде не нужен: в 1.2 он будет заменён. В чат агента, в файл или в
 аргумент команды он не попадает никогда.
 
-**На локальной машине, в своём терминале** (`ssh-keygen` спросит passphrase, `ssh-copy-id` —
-пароль хостера; оба вводятся руками, агент их не видит):
+**На локальной машине, в отдельном окне терминала** (правила для агента, п. 4). Что нужно
+знать до запуска:
+- `ssh-keygen` спросит passphrase — пароль от самого ключа. Пустой (просто Enter) означает,
+  что любой, кто скопирует файл ключа с твоего компьютера, войдёт на сервер. С passphrase
+  ключ бесполезен без неё. Ставь passphrase, а чтобы не вводить её при каждом подключении —
+  `ssh-add` ниже запоминает её в агенте (на macOS — в связке ключей).
+- При вводе паролей и passphrase **символы не отображаются**. Это норма, а не зависание.
+- `ssh-copy-id` спросит пароль хостера один раз. Агент его не видит.
+
 ```bash
-ssh-keygen -t ed25519 -f ~/.ssh/<server>_<device> -C "<server>_<device>"       # с passphrase
+ssh-keygen -t ed25519 -f ~/.ssh/<server>_<device> -C "<server>_<device>"
+ssh-add --apple-use-keychain ~/.ssh/<server>_<device>    # macOS; на Linux/Windows: ssh-add ~/.ssh/<server>_<device>
 ssh-copy-id -i ~/.ssh/<server>_<device>.pub root@<SERVER_IP>   # пропусти, если хостер уже положил ключ
 ssh -o BatchMode=yes -i ~/.ssh/<server>_<device> root@<SERVER_IP> id             # uid=0(root) → дальше всё по ключу
 ```
-Тип ключа — **ed25519** (не RSA), имя `<server>_<device>`. На Windows без `ssh-copy-id` — см.
-блок в 1.3, подставив `root@<SERVER_IP>`.
+Без `ssh-add` последняя проверка (и все проверки агента по ключу) упадёт: `BatchMode` не
+умеет спрашивать passphrase. Тип ключа — **ed25519** (не RSA), имя `<server>_<device>`.
+На Windows без `ssh-copy-id` — см. блок в 1.3, подставив `root@<SERVER_IP>`.
+
+Сразу же alias в `~/.ssh/config` на локальной машине — им пользуются все команды дальше
+(пока пользователь не создан, `User root`; после 1.2 поменяй на `<USERNAME>`):
+```
+Host <alias>
+    HostName <SERVER_IP>
+    User root
+    IdentityFile ~/.ssh/<server>_<device>
+    IdentitiesOnly yes
+```
 
 Дальше на сервере под root:
 ```bash
 apt update && apt upgrade -y
-apt autoremove -y
+apt autoremove -y && apt-get clean       # clean: на 10-ГБ диске скачанные .deb занимают до гигабайта
 # Если ядро обновилось — потребуется reboot (см. вывод или /var/run/reboot-required).
 # Перезагружай осознанно: reboot   # и переподключись через ~30-60с
 ```
@@ -336,32 +378,44 @@ apt autoremove -y
 `sudo grep -r NOPASSWD /etc/sudoers.d/` ничего не находит (кроме `90-setup-temp`, если ты
 осознанно в режиме B из правил для агента, п. 5), и пароль хостера уже заменён.
 
-На сервере под root — пользователь без интерактивного ввода пароля, ключ копируется от root:
+На сервере под root — пользователь без интерактивного ввода пароля, ключ копируется от root.
+Сначала посмотри `cat /root/.ssh/authorized_keys`: там должен быть **только твой** ключ.
+Хостеры иногда кладут туда свой управляющий ключ, и он переехал бы к sudo-пользователю.
 ```bash
 adduser --disabled-password --gecos '' <USERNAME>
 usermod -aG sudo <USERNAME>
 install -d -m 700 -o <USERNAME> -g <USERNAME> /home/<USERNAME>/.ssh
 install -m 600 -o <USERNAME> -g <USERNAME> /root/.ssh/authorized_keys /home/<USERNAME>/.ssh/authorized_keys
 ```
+После этого в `~/.ssh/config` на локальной машине смени `User root` на `User <USERNAME>` —
+alias из 1.1 теперь ведёт под пользователя.
 
 **Пароли — ни в чат, ни в команду, ни на диск сервера.** Новый пароль root (нужен для консоли
 провайдера) и пароль sudo-пользователя ставит локальный скрипт `scripts/set-passwords.sh`.
-Запускает его **пользователь в своём терминале**, не агент:
+Запускает его **пользователь в отдельном окне терминала**, не агент:
 ```bash
 bash scripts/set-passwords.sh root@<SERVER_IP> <USERNAME>
 ```
-Что он делает: генерирует оба пароля в `~/.vps/<SERVER_IP>.env` (права 600), передаёт их на
-сервер через `chpasswd` по stdin (не через аргументы и не файлом на сервере), печатает только
-статус. На уже настроенном сервере, где root по SSH закрыт, подключайся своим пользователем
-в режиме B и добавь `--user-only`: пароль root не трогается. Ожидаемый вывод:
+Что он делает: генерирует оба пароля в файл `~/.vps/<SERVER_IP>.env` **на твоём компьютере**
+(права 600), передаёт их на сервер через `chpasswd` по stdin (не через аргументы и не файлом
+на сервере), печатает только статус. На уже настроенном сервере, где root по SSH закрыт,
+подключайся своим пользователем в режиме B и добавь `--user-only`: пароль root не трогается.
+Ожидаемый вывод:
 ```
-создан ~/.vps/<SERVER_IP>.env — сохрани оба пароля в менеджер паролей, потом удали файл
+создан ~/.vps/<SERVER_IP>.env — сохрани пароли в менеджер паролей, потом удали файл
   root: пароль задан
   <USERNAME>: пароль задан
 готово: пароли установлены, в вывод не попали
 ```
-После этого: открой файл сам (не через агента), сохрани оба пароля в менеджер паролей, удали
-файл. Пароль хостера с этого момента недействителен — так и задумано.
+Теперь открой этот файл **в том же отдельном окне терминала, не через агента** (иначе пароли
+попадут в его контекст) и сохрани оба в менеджер паролей:
+```bash
+open -e ~/.vps/<SERVER_IP>.env        # macOS; Linux: cat ~/.vps/<SERVER_IP>.env
+notepad $env:USERPROFILE\.vps\<SERVER_IP>.env    # Windows PowerShell
+```
+Файл **пока не удаляй**: пароль sudo понадобится в гейте (вход в консоль провайдера) и в
+режиме A. Удаление — пункт чеклиста 9.4. Пароль хостера с этого момента недействителен —
+так и задумано.
 
 > **Для новичка sudo оставляем с запросом пароля.** Это намеренно: NOPASSWD-sudo снимает
 > последний барьер при компрометации ключа или сессии. Пароль sudo нужен и как fallback,
@@ -405,22 +459,18 @@ ssh -t -i ~/.ssh/<server>_<device> -o IdentitiesOnly=yes <USERNAME>@<SERVER_IP> 
 ```
 Ожидаемый вывод: первая строка `<USERNAME>`, затем запрос пароля sudo, затем `root`.
 `-t` обязателен: без терминала `sudo` не сможет спросить пароль и упадёт с «a terminal is required».
-
-Удобный alias в `~/.ssh/config` на локальной машине:
-```
-Host <alias>
-    HostName <SERVER_IP>
-    User <USERNAME>
-    IdentityFile ~/.ssh/<server>_<device>
-    IdentitiesOnly yes
-```
+Alias `<alias>` уже создан в 1.1 и переведён на `<USERNAME>` в 1.2: `ssh <alias> id` → `uid=1000(<USERNAME>)`.
 
 ### 1.4 SSH hardening ⚠️ гейт обязателен
 
 **Уже сделано, если:** `sudo sshd -T | grep -iE 'permitrootlogin|passwordauthentication'`
 показывает обе строки со значением `no`.
 
-**Пройди гейт** (все 7 пунктов), потом создай `/etc/ssh/sshd_config.d/99-hardening.conf`:
+**Пройди гейт** (все 7 пунктов), потом создай `/etc/ssh/sshd_config.d/00-hardening.conf`.
+Имя начинается с `00-` намеренно: в `sshd_config.d/` действует «first match wins», файлы
+читаются по алфавиту, и `50-cloud-init.conf` хостера с `PasswordAuthentication yes` перебил
+бы любой `99-…`. С `00-` наш файл первый, и чужой трогать не нужно (откат из гейта удаляет
+только его). Проверь, что он первый: `ls /etc/ssh/sshd_config.d/`.
 ```
 PermitRootLogin no
 PasswordAuthentication no
@@ -451,10 +501,11 @@ passwordauthentication no
 ```
 Теперь **новая сессия** → вход работает → `sudo systemctl stop ssh-rollback.timer`.
 
-**Gotcha 1 — cloud-init перезаписывает hardening.** Файл `/etc/ssh/sshd_config.d/50-cloud-init.conf`
-часто содержит `PasswordAuthentication yes` и в `sshd_config.d/` действует «first match wins».
-Проверяй через `sudo sshd -T` (эффективные значения), а не только свой файл. Если перебивает —
-поправь/удали строку в `50-cloud-init.conf`.
+**Gotcha 1 — cloud-init и порядок файлов.** `/etc/ssh/sshd_config.d/50-cloud-init.conf` с
+`PasswordAuthentication yes` есть почти на любом образе хостера. Он не мешает, пока наш файл
+называется `00-…`. Если `sshd -T` всё же показывает `yes` — значит, есть файл, который
+сортируется раньше твоего (`ls /etc/ssh/sshd_config.d/`): переименуй свой так, чтобы он был
+первым. Проверяй эффективные значения через `sudo sshd -T`, а не содержимое файлов.
 
 **Gotcha 2 — смена порта SSH под `ssh.socket` (Ubuntu 22.10+, включая 24.04 и 26.04).** sshd
 запускается через systemd-сокет, но `Port` по-прежнему задаётся в `sshd_config` (или drop-in в
@@ -470,15 +521,21 @@ sudo ss -tlnp | grep sshd                          # слушает новый �
 
 ### 1.5 Автоматические обновления безопасности ⭐ (ядро автономности)
 
-**Уже сделано, если:** в `/etc/apt/apt.conf.d/20auto-upgrades` стоит
-`Unattended-Upgrade "1"`, `systemctl list-timers 'apt-daily*'` показывает два активных таймера
-и `pro status` показывает `esm-apps enabled`.
+**Уже сделано, если** все три условия сразу: `dpkg-query -W -f='${Status}' unattended-upgrades`
+даёт `install ok installed`, `systemctl is-enabled apt-daily.timer apt-daily-upgrade.timer` —
+дважды `enabled`, и в `/etc/apt/apt.conf.d/20auto-upgrades` стоит `Unattended-Upgrade "1"`.
+Одного файла мало: образы хостеров бывают с удалённым пакетом и выключенными таймерами при
+лежащем «правильном» конфиге (VDSina, 26.04, проверено).
 
 Это самый важный шаг для «сервер обслуживает себя сам». Без него дыры в пакетах копятся.
 
 ```bash
 sudo apt install unattended-upgrades apt-listchanges -y
-sudo dpkg-reconfigure -plow unattended-upgrades   # выбери "Yes" — создаст 20auto-upgrades
+# Включить неинтерактивно (dpkg-reconfigure без терминала не пройдёт):
+echo 'unattended-upgrades unattended-upgrades/enable_auto_updates boolean true' | sudo debconf-set-selections
+sudo dpkg-reconfigure -f noninteractive unattended-upgrades
+# Таймеры принадлежат пакету apt и могут быть выключены хостером отдельно:
+sudo systemctl enable --now apt-daily.timer apt-daily-upgrade.timer
 ```
 
 Проверь `/etc/apt/apt.conf.d/20auto-upgrades`:
@@ -490,11 +547,10 @@ APT::Periodic::AutocleanInterval "7";
 
 В `/etc/apt/apt.conf.d/50unattended-upgrades` (раскомментируй/настрой ключевые строки):
 ```
-// Ставить обновления безопасности (включено по умолчанию):
+// Ставить обновления безопасности (включено по умолчанию; строки ESM в файле не трогай, они
+// без подписки просто не действуют):
 Unattended-Upgrade::Allowed-Origins {
     "${distro_id}:${distro_codename}-security";
-    "${distro_id}ESMApps:${distro_codename}-apps-security";
-    "${distro_id}ESM:${distro_codename}-infra-security";
 };
 Unattended-Upgrade::Remove-Unused-Dependencies "true";
 // Автоперезагрузка, если обновление её требует (ядро). Выбери окно с минимумом нагрузки:
@@ -506,15 +562,6 @@ Unattended-Upgrade::Automatic-Reboot-Time "04:00";
 > (безопаснее, но возможен короткий даунтайм). `false` = ядро обновится, но reboot ждёт тебя
 > (healthcheck из раздела 6 напомнит). Для одиночного прод-сервера новичку обычно лучше `true`.
 
-**Ubuntu Pro (бесплатно для 5 машин) — без него половина автообновлений не работает.**
-fail2ban, restic, certbot, nginx-модули живут в репозитории `universe`, а security-патчи для
-`universe` на LTS приходят только через ESM Apps. Строки `ESMApps` в конфиге выше без подписки
-ничего не дают. Токен — на https://ubuntu.com/pro/dashboard (личный аккаунт, бесплатно):
-```bash
-sudo pro attach <TOKEN>
-pro status                       # esm-apps и esm-infra — enabled
-```
-
 Проверка — сухой прогон без установки:
 ```bash
 sudo unattended-upgrade --dry-run --debug 2>&1 | tail -20
@@ -522,6 +569,12 @@ systemctl list-timers 'apt-daily*'   # таймеры активны?
 ```
 Ожидаемый вывод `list-timers`: две строки, `apt-daily.timer` и `apt-daily-upgrade.timer`, у
 обеих заполнено `NEXT`.
+
+> **Не пугайся «обновления есть».** `apt list --upgradable` может показывать несколько
+> пакетов и через неделю после включения. Ubuntu раскатывает обновления волнами (phased
+> updates), и в dry-run это видно как `adjusting candidate … in allowed origin`. Это норма:
+> пакет придёт в свою волну. Проблема только если `list-timers` пуст или растёт число пакетов
+> с пометкой `security`.
 
 ### 1.6 fail2ban (защита SSH от брутфорса)
 
@@ -544,14 +597,22 @@ backend = systemd
 bantime = 1h
 findtime = 30m
 maxretry = 4
-# Не забанить себя: добавь СВОИ статические IP (узнай: curl ifconfig.me)
-ignoreip = 127.0.0.1/8 ::1 <YOUR_HOME_IP>
+# Не забанить себя: добавь адрес, С КОТОРОГО ходишь по SSH (узнай: curl ifconfig.me).
+# Сидишь за VPN — это адрес VPN-сервера, и это правильно: ssh идёт с него.
+# Домашний IP динамический — не вписывай: бан на 1 час по ключевому входу не страшен,
+# по ключу fail2ban не банит (он считает только неудачные попытки).
+ignoreip = 127.0.0.1/8 ::1 <YOUR_IP>
 ```
 
 ```bash
 sudo systemctl enable --now fail2ban
 sudo fail2ban-client status sshd
+# Jail реально видит отказы? На свежем сервере счётчики 0 ничего не доказывают:
+sudo fail2ban-regex systemd-journal[journalflags=1] 'sshd[mode=normal]' | tail -3
 ```
+Последняя команда прогоняет фильтр по реальному журналу и печатает число совпадений
+(`Lines: … matched`). Ноль на сервере, который час стоит в интернете, значит фильтр не видит
+логи. На 26.04 отказы пишет `sshd-session`, а не `sshd`, jail ловит их через `_SYSTEMD_UNIT`.
 Ожидаемый вывод:
 ```
 Status for the jail: sshd
@@ -578,9 +639,10 @@ sudo mkdir -p /etc/systemd/journald.conf.d
 printf '[Journal]\nSystemMaxUse=200M\n' | sudo tee /etc/systemd/journald.conf.d/size.conf
 sudo systemctl restart systemd-journald && journalctl --disk-usage
 
-# Swap нужен на VPS с малым RAM (< 2 ГБ), чтобы OOM не убивал сервисы:
-free -h
-sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile
+# Swap нужен на VPS с малым RAM (< 2 ГБ), чтобы OOM не убивал сервисы.
+# Размер: как RAM, но не больше 2G и не больше 10% диска — на 10-ГБ диске это 1G, не 2G
+free -h && df -h /
+sudo fallocate -l 1G /swapfile && sudo chmod 600 /swapfile
 sudo mkswap /swapfile && sudo swapon /swapfile
 grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 echo 'vm.swappiness=10' | sudo tee /etc/sysctl.d/99-swap.conf && sudo sysctl --system
@@ -600,7 +662,7 @@ echo 'vm.swappiness=10' | sudo tee /etc/sysctl.d/99-swap.conf && sudo sysctl --s
 sudo ufw default deny incoming
 sudo ufw default allow outgoing
 sudo ufw allow 22/tcp comment 'SSH'      # ВАЖНО: до enable! Если порт сменил — свой порт
-sudo ufw enable
+sudo ufw --force enable                  # --force: без терминала вопрос «Proceed (y|n)?» молча отменяет включение
 sudo ufw status verbose
 ```
 Ожидаемый вывод (начало):
@@ -832,7 +894,7 @@ sudo /usr/local/bin/healthcheck.sh && echo OK    # прогон вручную: 
 
 | Когда | Что делать | Автоматизировано? |
 |-------|-----------|-------------------|
-| **Постоянно (само)** | Обновления безопасности (`unattended-upgrades` + ESM), ежедневный бэкап, алерт при его падении, мониторинг | ✅ Да |
+| **Постоянно (само)** | Обновления безопасности (`unattended-upgrades`), ежедневный бэкап, алерт при его падении, мониторинг | ✅ Да |
 | **Еженедельно (~5 мин)** | Глянуть алерты; `df -h` (диск); `sudo docker ps` или `systemctl --failed`; в healthchecks.io бэкап «зелёный» | Полуавтомат |
 | **Ежемесячно (~15 мин)** | `sudo apt update && apt list --upgradable` (есть ли крупные апдейты вне security); `sudo fail2ban-client status sshd`; **тестовый restore одного файла из бэкапа** | Вручную |
 | **Раз в полгода** | `scripts/diagnose.sh` — не «уехало» ли что-то; `sudo lynis audit system --quick`; проверить, не вышел ли новый Ubuntu LTS; обновить пароли/ротировать ключи при необходимости | Вручную |
@@ -865,6 +927,8 @@ sudo /usr/local/bin/healthcheck.sh && echo OK    # прогон вручную: 
     проблеме в день аварии.
 15. **Не передавай агенту длинные команды в одну строку с кавычками** — только скриптом из
     файла (правила для агента, п. 1). Ломается тихо.
+16. **Не вводи пароли через `!` в Claude Code** — у него нет терминала, ssh молча получит
+    `Permission denied`. Пароли и passphrase — только в отдельном окне терминала.
 
 ---
 
@@ -926,7 +990,7 @@ Telegram-бот <имя> → чат <кто получает>. healthchecks.io c
 
 ### 9.4 Чеклист готовности к проду
 
-- [ ] Система обновлена; `unattended-upgrades` включён и проверен (`--dry-run`); Ubuntu Pro подключён (`esm-apps enabled`).
+- [ ] Система обновлена; `unattended-upgrades` установлен, таймеры `apt-daily*` `enabled`, `--dry-run` проходит.
 - [ ] Работаем под отдельным sudo-пользователем (не root); sudo с паролем.
 - [ ] Пароль хостера заменён; новые пароли root и пользователя в менеджере паролей; `~/.vps/<host>.env` удалён.
 - [ ] Временный NOPASSWD режима B снят: файла `90-setup-temp` нет, таймер `sudo-temp-expire` не висит, `sudo -k && sudo -n true` отвечает `a password is required`.
@@ -976,7 +1040,7 @@ sshd -T | grep -iE 'port|permitroot|passwordauth|allowusers'
 journalctl -u ssh -n 30 --no-pager          # ошибки конфига будут здесь
 
 # 4. Вернуть SSH: убрать свой drop-in (или бэкап из гейта) и перезапустить
-mv /etc/ssh/sshd_config.d/99-hardening.conf /root/99-hardening.conf.broken
+mv /etc/ssh/sshd_config.d/00-hardening.conf /root/00-hardening.conf.broken
 sshd -t && systemctl daemon-reload && systemctl restart ssh.socket ssh.service
 
 # 5. Если дело в UFW — временно разрешить SSH (не reset!)
