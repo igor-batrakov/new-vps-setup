@@ -5,7 +5,7 @@
 # Результат: /root/.config/tg-alert/env (600) с TG_TOKEN, TG_CHAT, TG_NAME. Его читает tg-alert.
 # До запуска: создай бота у @BotFather (получишь токен) и напиши боту любое сообщение —
 # по нему скрипт сам определит chat_id. Если на сервере уже есть tg-alert старого формата —
-# сначала замени его на новый (SKILL.md, раздел 6), иначе тестовое сообщение уйдёт в старом виде.
+# сначала замени его на новый (SKILL.md, раздел 5), иначе тестовое сообщение уйдёт в старом виде.
 set -euo pipefail
 [ "$(id -u)" -eq 0 ] || { echo "нужен root: sudo bash $0"; exit 1; }
 ENV_FILE=/root/.config/tg-alert/env
@@ -45,5 +45,5 @@ if [ -x /usr/local/bin/tg-alert ]; then
   /usr/local/bin/tg-alert "✅ Алерты подключены" "Сервер «$NAME» будет писать сюда о диске, памяти, перезагрузке, упавших сервисах и бэкапе."
   echo "тестовое сообщение отправлено — проверь Telegram"
 else
-  echo "теперь положи /usr/local/bin/tg-alert (SKILL.md, раздел 6) и проверь: sudo tg-alert '✅ Тест'"
+  echo "теперь положи /usr/local/bin/tg-alert (SKILL.md, раздел 5) и проверь: sudo tg-alert '✅ Тест'"
 fi
