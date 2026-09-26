@@ -102,6 +102,12 @@ git clone https://github.com/igor-batrakov/new-vps-setup.git ~/.agents/skills/ne
 **Сервер уже частично настроен?** Тот же путь: диагностика покажет `[!!]` только там, где
 надо, и у каждого раздела есть «уже сделано, если…».
 
+**Нужно больше?** Этот скилл намеренно ограничен безопасным минимумом и «продом без
+усложнений». Третий уровень — VPN (AmneziaWG, xray), DOCKER-USER, смена порта SSH с
+dead-man switch, апгрейд LTS → LTS, аудит Lynis/ssh-audit, автообновление образов с откатом —
+живёт в отдельном скилле [`ubuntu-server-admin`](https://github.com/igor-batrakov/ubuntu-server-admin).
+Начинай здесь, переходи туда, когда сервер уже прошёл чеклист.
+
 **Вариант Б — как чеклист руками.** Открой [`SKILL.md`](SKILL.md) и [`references/backups.md`](references/backups.md)
 и выполняй команды сам. Это полноценная инструкция, читается без агента.
 
