@@ -175,8 +175,9 @@ systemctl list-timers backup-daily.timer
 sudo mkdir -p /etc/systemd/system/backup-daily.service.d
 printf '[Service]\nExecStart=\nExecStart=/bin/false\n' | sudo tee /etc/systemd/system/backup-daily.service.d/test.conf
 sudo systemctl daemon-reload && sudo systemctl start backup-daily.service; true
-systemctl show backup-failed.service -p ActiveEnterTimestamp     # только что? → в Telegram пришло «🔴 Бэкап не прошёл»
-sudo rm /etc/systemd/system/backup-daily.service.d/test.conf
+# oneshot-юнит не бывает «active», поэтому ActiveEnterTimestamp у него всегда пуст — смотри время запуска:
+systemctl show backup-failed.service -p ExecMainStartTimestamp   # только что? → в Telegram пришло «🔴 Бэкап не прошёл»
+sudo rm /etc/systemd/system/backup-daily.service.d/test.conf && sudo rmdir /etc/systemd/system/backup-daily.service.d
 sudo systemctl daemon-reload && sudo systemctl reset-failed backup-daily.service
 sudo systemctl start backup-daily.service && echo 'настоящий бэкап прошёл'
 ```

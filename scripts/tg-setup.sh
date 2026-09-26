@@ -4,7 +4,8 @@
 #   scp scripts/tg-setup.sh <alias>:/tmp/ && ssh -t <alias> sudo bash /tmp/tg-setup.sh
 # Результат: /root/.config/tg-alert/env (600) с TG_TOKEN, TG_CHAT, TG_NAME. Его читает tg-alert.
 # До запуска: создай бота у @BotFather (получишь токен) и напиши боту любое сообщение —
-# по нему скрипт сам определит chat_id.
+# по нему скрипт сам определит chat_id. Если на сервере уже есть tg-alert старого формата —
+# сначала замени его на новый (SKILL.md, раздел 6), иначе тестовое сообщение уйдёт в старом виде.
 set -euo pipefail
 [ "$(id -u)" -eq 0 ] || { echo "нужен root: sudo bash $0"; exit 1; }
 ENV_FILE=/root/.config/tg-alert/env
@@ -28,7 +29,9 @@ if [ -z "$CHAT" ]; then
   echo "chat_id определён: $CHAT"
 fi
 
-read -rp "Короткое имя сервера для алертов [$(hostname -s)]: " NAME
+echo "Имя сервера в алертах: короткое и понятное тебе, например ssh-alias. У хостеров hostname часто"
+echo "это номер заказа вроде v1036565 — такое имя в 3 часа ночи ничего не скажет."
+read -rp "Имя сервера для алертов [$(hostname -s)]: " NAME
 NAME=${NAME:-$(hostname -s)}
 NAME=${NAME//\'/}
 
