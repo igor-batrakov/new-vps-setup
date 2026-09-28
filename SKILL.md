@@ -307,12 +307,12 @@ systemctl --failed
 | NOPASSWD у `ubuntu`/`debian`/`admin` | 1.2 |
 | Пакет `unattended-upgrades` не `installed`, таймеры `apt-daily*` не `enabled`, или `Unattended-Upgrade "0"` | 1.5 |
 | fail2ban не установлен / jail sshd не активен | 1.6 |
-| `synchronized: no`, нет swap при RAM < 2 ГБ, journald без лимита | 1.7 |
+| `synchronized: no`, нет swap при RAM < 2 ГБ, journald без лимита; swap больше 10% диска, `linux-generic` на маленьком диске | 1.7 |
 | UFW `inactive` или `Default: allow (incoming)` | 2 |
 | Порт БД (5432/3306/6379/27017) слушает на `0.0.0.0`; Docker без лог-ротации | 3 |
 | Сайт без HTTPS | 4 |
-| Нет `tg-alert` или пуст `/root/.config/tg-alert/env`, нет `healthcheck` cron | 5 |
-| Нет таймера бэкапа, нет `backup-failed.service` | 6 |
+| Нет `tg-alert` или пуст `/root/.config/tg-alert/env`, нет `healthcheck` cron или он не смотрит контейнеры | 5 |
+| Нет таймера бэкапа, нет `backup-failed.service`, данные контейнеров или `/root/.acme.sh` мимо `PATHS` | 6 |
 | Есть упавшие сервисы (`systemctl --failed`) | 8, потом `journalctl -u <unit>` |
 | Есть `/root/server-notes.md` | прочитай его первым — там решения прошлого админа |
 
@@ -653,6 +653,19 @@ grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' | sudo tee -
 echo 'vm.swappiness=10' | sudo tee /etc/sysctl.d/99-swap.conf && sudo sysctl --system
 ```
 
+Образ хостера бывает уже со swap больше правила (2G на 10-ГБ диске). Уменьшить swap-файл
+(имя — из `swapon --show`; fstab не меняется, путь тот же):
+```bash
+free -m      # занятый swap должен поместиться в available RAM, иначе swapoff упрётся в OOM
+sudo swapoff /swapfile && sudo truncate -s 1G /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
+swapon --show
+```
+
+**Маленький диск (≤ 20 ГБ) на виртуалке.** Образ хостера ставит `linux-generic` с прошивками
+для железа, диагностику ядра, kdump и десктопные демоны: на 10-ГБ диске это ~1.5 ГБ. Агент
+предлагает чистку, пользователь решает. Порядок и ловушки (удалить прошивки «в лоб» = ядро
+перестаёт обновляться) — в **references/small-vps.md**.
+
 ---
 
 ## 2. Файрвол UFW — уровень 1 ⚠️ гейт обязателен
@@ -821,10 +834,13 @@ sudo /usr/local/bin/tg-alert "✅ Тест" "Если ты это читаешь
 ```
 
 **Проверка ресурсов** — cron-скрипт `/usr/local/bin/healthcheck.sh`, раз в час: диск, память,
-«нужна перезагрузка» (если автоперезагрузка в 1.5 выключена), упавшие сервисы:
+«нужна перезагрузка» (если автоперезагрузка в 1.5 выключена), упавшие сервисы и больные
+контейнеры. Контейнер с `restart: unless-stopped`, который падает по кругу или не проходит свой
+healthcheck, в `systemctl --failed` не попадает — его видит только `docker ps`:
 ```bash
 #!/bin/bash
-# Раз в час. Диск > 85%, занято > 90% RAM (с учётом available), ждёт reboot, упавшие юниты → Telegram
+# Раз в час. Диск > 85%, занято > 90% RAM (с учётом available), ждёт reboot, упавшие юниты,
+# нездоровые контейнеры → Telegram
 A=/usr/local/bin/tg-alert
 DISK=$(df / | awk 'END{print $5+0}')
 MEM=$(free | awk '/Mem/{printf "%.0f", ($2-$7)/$2*100}')
@@ -833,6 +849,9 @@ MEM=$(free | awk '/Mem/{printf "%.0f", ($2-$7)/$2*100}')
 [ -f /var/run/reboot-required ] && [ "$(date +%H)" = "09" ] && $A "🔄 Нужна перезагрузка" "Обновилось ядро, защита заработает после reboot. Когда удобно: sudo reboot, затем проверка из раздела 9.2"
 FAILED=$(systemctl --failed --no-legend --plain | awk '{print $1}' | tr '\n' ' ')
 [ -n "$FAILED" ] && $A "⚠️ Упал сервис: ${FAILED}" "Что случилось: sudo journalctl -u <имя> -n 50. Поднять: sudo systemctl restart <имя>"
+# Контейнеры (раздел 3): не прошли свой healthcheck или перезапускаются по кругу. Без Docker вывод пуст
+BAD=$( (docker ps --filter health=unhealthy --format '{{.Names}}'; docker ps --filter status=restarting --format '{{.Names}}') 2>/dev/null | sort -u | tr '\n' ' ')
+[ -n "$BAD" ] && $A "🩺 Контейнер нездоров: ${BAD}" "Сервис в контейнере не отвечает или падает по кругу. Что случилось: sudo docker logs --tail 50 <имя>. Поднять: sudo docker restart <имя>"
 exit 0
 ```
 ```bash
@@ -900,13 +919,18 @@ A и B можно совмещать: снапшот хостера как бы�
 |-----------|---------------|-------|
 | **Конфиги системы** | `/etc` целиком | nginx, ssh, ufw, fail2ban, systemd-юниты — чтобы поднять сервер «как был» |
 | **Данные приложения** | `/home/<USERNAME>/app/data`, `/var/lib/<service>` | то, что нельзя переустановить: пользовательский контент, загрузки |
+| **Данные контейнеров** | каталоги compose-проектов (`/opt/<проект>`: compose-файл, `.env`, bind-mount), тома Docker (`/var/lib/docker/volumes/<том>/_data`) | в контейнере живут БД, ключи VPN, сертификаты. Список источников: `sudo docker inspect -f '{{.Name}}: {{range .Mounts}}{{.Source}} {{end}}' $(sudo docker ps -aq)`, системные ro-пути вроде `/lib/modules` не нужны. SQLite внутри (`*.db`) — дампом, строка ниже |
 | **Дампы БД** | `/var/backups/*.sql.gz` | дамп через `pg_dump`/`.backup` **перед** restic (живой файл БД может быть битым) |
-| **Секреты приложения** | `.env` приложения, `/root/.config/*` | бэкапятся зашифрованно (restic шифрует repo). Пароль шифрования — **вне сервера**. Паролей root/sudo на сервере нет — они только в менеджере паролей |
+| **Секреты приложения** | `.env` приложения, `/root/.config/*`, `/root/.acme.sh` (если сертификаты выпускает acme.sh) | бэкапятся зашифрованно (restic шифрует repo). Пароль шифрования — **вне сервера**. Паролей root/sudo на сервере нет — они только в менеджере паролей |
 | **Паспорт сервера** | `/root/server-notes.md` | чтобы при восстановлении помнить, что и зачем было настроено |
 
 **Что НЕ бэкапить** (переустанавливается, только раздувает бэкап):
 `node_modules`, `.venv`/`venv`, Docker-образы (`docker pull`), системные пакеты (`apt`),
 кэши, `/var/log`, `/tmp`. Эти пути уже в `--exclude` скрипта (см. backups.md).
+
+`diagnose.sh` сверяет каталоги compose-проектов, тома контейнеров и `/root/.acme.sh` с
+`PATHS` в `backup-now` и даёт `[!!]` на всё, что идёт мимо бэкапа. Контейнер, поставленный
+после настройки бэкапа, так и находится.
 
 ### Сколько хранить (retention) — выбери политику
 
@@ -1059,7 +1083,7 @@ scp scripts/diagnose.sh <alias>:/tmp/ && ssh -t <alias> 'sudo bash /tmp/diagnose
 - [ ] БД и внутренние сервисы не торчат в интернет (localhost / приватная сеть).
 - [ ] Docker-логи ротируются; чувствительные порты на `127.0.0.1`; `restart: unless-stopped`.
 - [ ] HTTPS работает; автопродление сертификата проверено (`certbot renew --dry-run`).
-- [ ] Бэкап выбран осознанно: снапшоты хостера, restic offsite или явный отказ в паспорте. Для restic: ежедневно, offsite, пароль в менеджере.
+- [ ] Бэкап выбран осознанно: снапшоты хостера, restic offsite или явный отказ в паспорте. Для restic: ежедневно, offsite, пароль в менеджере; данные контейнеров и `/root/.acme.sh` в `PATHS` (diagnose.sh не даёт `[!!]` в разделе 6).
 - [ ] **Тестовое восстановление выполнено** (restic: файлы совпали по `cmp`; хостер: откат на снапшот пробовали).
 - [ ] **Алерт о падении бэкапа проверен сквозняком** (backups.md, раздел 6: временный `/bin/false` → `backup-failed` сработал сам); healthchecks.io ждёт пинг, если настроен.
 - [ ] Алерты в Telegram подключены (или пропуск записан в паспорт); `healthcheck.sh` в cron; тестовое сообщение пришло. Внешний uptime — если есть публичный сервис.

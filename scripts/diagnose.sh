@@ -152,9 +152,15 @@ DU=$(df / | awk 'END{print $5+0}')
 if [ "$DU" -gt 85 ]; then bad "диск / занят на ${DU}%" "5"; fi
 info "journald: $(journalctl --disk-usage 2>/dev/null | sed 's/Archived and active journals take up //')"
 if grep -rqs '^SystemMaxUse' /etc/systemd/journald.conf /etc/systemd/journald.conf.d/; then ok "лимит журнала задан"; else bad "SystemMaxUse не задан — журнал не ограничен" "1.7"; fi
+DISK_GB=$(df -BG / | awk 'END{print $2+0}')
+if [ "$DISK_GB" -le 20 ] && [ "$(systemd-detect-virt 2>/dev/null)" != none ] && dpkg-query -W -f='${Status}' linux-generic 2>/dev/null | grep -q 'ok installed'; then
+  info "виртуалка с диском ${DISK_GB} ГБ на linux-generic: прошивки и лишние пакеты занимают ~1.5 ГБ — references/small-vps.md"
+fi
 RAM_MB=$(free -m | awk '/Mem/{print $2}')
 if [ -n "$(swapon --show --noheadings 2>/dev/null)" ]; then
   ok "swap: $(swapon --show --noheadings 2>/dev/null | awk '{print $1, $3}' | head -1)"
+  SWAP_MB=$(free -m | awk '/Swap/{print $2}')
+  [ "$SWAP_MB" -gt $((DISK_GB * 1024 / 10 + 64)) ] && info "swap ${SWAP_MB} МБ больше 10% диска — можно уменьшить (1.7)"
 elif [ "$RAM_MB" -lt 2048 ]; then
   bad "swap нет при RAM ${RAM_MB} МБ — OOM убьёт сервисы" "1.7"
 else
@@ -195,6 +201,13 @@ PUSH_ALL=$(grep -rlisE 'gatus|heartbeat|healthchecks|hc-ping|api\.telegram\.org|
 PUSH_N=$(echo "$PUSH_ALL" | grep -c .)
 PUSH=$(echo "$PUSH_ALL" | head -10 | paste -sd ' ')
 [ "$PUSH_N" -gt 10 ] && PUSH="$PUSH … и ещё $((PUSH_N - 10))"
+# Данные, которые легко забыть в бэкапе: каталоги compose-проектов, тома и bind-mount контейнеров
+# (кроме системных ro-путей вроде /lib/modules), сертификаты acme.sh
+DDATA=$( { have docker && docker ps -aq 2>/dev/null | xargs -r docker inspect -f \
+    '{{index .Config.Labels "com.docker.compose.project.working_dir"}} {{range .Mounts}}{{.Source}} {{end}}' 2>/dev/null
+  [ -d /root/.acme.sh ] && echo /root/.acme.sh; } | tr ' ' '\n' | grep '^/' \
+  | grep -vE '^/(lib|usr|proc|sys|dev|run|var/run|boot)(/|$)|^/etc/(localtime|timezone)$' | sort -u \
+  | awk '{a[NR]=$0} END{for(i=1;i<=NR;i++){d=0; for(j=1;j<=NR;j++) if(i!=j && index(a[i], a[j] "/")==1) d=1; if(!d) print a[i]}}')
 
 if have restic && systemctl is-enabled backup-daily.timer >/dev/null 2>&1; then
   ok "схема скилла: restic + backup-daily.timer ($(systemctl list-timers backup-daily.timer --no-legend --no-pager 2>/dev/null | awk '{print "следующий", $1, $2, $3}'))"
@@ -202,9 +215,20 @@ if have restic && systemctl is-enabled backup-daily.timer >/dev/null 2>&1; then
   # Непустое значение с https://, а не наличие строки: шаблон env кладёт HC_PING_URL='' и у пропустивших
   HC=$(grep -s '^export HC_PING_URL=' /root/.config/restic/env | cut -d= -f2- | tr -d "'\"" )
   if printf '%s' "$HC" | grep -q '^https://'; then ok "healthchecks.io ping задан"; else info "dead-man's switch (healthchecks.io) не настроен — пропуск бэкапа заметишь только по тишине (backups.md, раздел 3)"; fi
+  # Таймер есть — ещё не значит, что бэкапится нужное: сверяем данные с массивом PATHS в backup-now
+  BPATHS=$(awk '/^PATHS=\(/{f=1; sub(/^PATHS=\(/, "")} f{sub(/#.*/, ""); if (sub(/\).*/, "")) f=0; print}' /usr/local/bin/backup-now 2>/dev/null | tr -s ' \t' '\n' | grep '^/')
+  MISS=""
+  for s in $DDATA; do
+    hit=""
+    for p in $BPATHS; do case "$s" in "$p"|"${p%/}"/*) hit=1; break ;; esac; done
+    [ -z "$hit" ] && MISS="$MISS $s"
+  done
+  if [ -n "$MISS" ]; then bad "данные мимо бэкапа (нет в PATHS backup-now):$MISS" "6"
+  elif [ -n "$DDATA" ]; then ok "данные контейнеров и сертификаты под PATHS backup-now"; fi
 elif [ -n "$TIMERS$CRONS$TOOLS" ]; then
   info "своя схема бэкапов — таймеры: ${TIMERS:-нет}; cron: ${CRONS:-нет}; инструменты: ${TOOLS:-нет}"
   info "сверь с принципами раздела 6: offsite, проверенное восстановление, алерт при падении, dead-man's switch"
+  [ -n "$DDATA" ] && info "проверь, что схема бэкапит данные контейнеров и сертификаты: $(echo "$DDATA" | paste -sd ' ')"
 else
   bad "бэкапов не видно: нет restic/borg/rclone и ни одного таймера или cron с backup в имени" "6"
 fi
@@ -222,6 +246,10 @@ else
 fi
 if [ -f /etc/cron.d/healthcheck ]; then
   ok "healthcheck.sh в cron есть"
+  # Шаблон до 28.09.2026 смотрел только systemctl --failed: unhealthy и restart-loop контейнеров не видел
+  if have docker && ! grep -qs 'docker ps' /usr/local/bin/healthcheck.sh; then
+    bad "healthcheck.sh не смотрит контейнеры — unhealthy и перезапуск по кругу пройдут молча" "5"
+  fi
 elif echo "$TIMERS $CRONS" | grep -qiE 'health|resource|monitor'; then
   info "своя проверка ресурсов: $(echo "$TIMERS $CRONS" | tr ' ' '\n' | grep -iE 'health|resource|monitor' | paste -sd ' ')"
 else

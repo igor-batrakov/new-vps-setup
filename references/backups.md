@@ -79,6 +79,8 @@ source /root/.config/restic/env
 # mkdir -p /var/backups
 # sudo -u postgres pg_dump mydb | gzip > /var/backups/mydb-$(date +%F).sql.gz
 # для SQLite: sqlite3 /path/app.db ".backup /var/backups/app-$(date +%F).db"
+# SQLite контейнера — тот же .backup по файлу на хосте (bind-mount), нужен пакет sqlite3:
+# sqlite3 /opt/3x-ui/db/x-ui.db ".backup /var/backups/x-ui-$(date +%F).db"
 # Чистим старые дампы локально (restic уже хранит историю):
 # find /var/backups -name '*.sql.gz' -mtime +7 -delete
 
@@ -91,8 +93,14 @@ PATHS=(
   /root/.config              # env restic и tg-alert, чтобы восстановить обвязку
   /home/<USERNAME>/app       # код/данные приложения (НЕ node_modules/venv)
   /var/lib/<service>         # данные сервиса
+  /opt/<проект>              # compose-проект: compose-файл, .env, bind-mount данных
+  /var/lib/docker/volumes/<том>/_data   # именованный том Docker (список: SKILL.md, раздел 6)
+  /root/.acme.sh             # сертификаты и ключи, если выпускает acme.sh
   /var/backups               # дампы БД (если делаешь дамп выше)
 )
+# Лишние строки убери: несуществующий путь restic считает ошибкой, бэкап упадёт.
+# Живые файлы SQLite, которые выше дампятся через .backup, исключи вместе с -wal и -shm:
+# добавь к restic backup  --exclude '/opt/3x-ui/db/x-ui.db*'  — восстанавливать только из дампа.
 
 restic backup "${PATHS[@]}" \
   --exclude-caches \
@@ -269,6 +277,12 @@ sudo chown -R <USERNAME>:<USERNAME> /home/<USERNAME>/app
 # БД — из дампа, а не из файлов БД
 zcat /var/tmp/restore/var/backups/mydb-<дата>.sql.gz | sudo -u postgres psql mydb
 # SQLite: cp /var/tmp/restore/var/backups/app-<дата>.db /path/app.db
+# compose-проект: вернуть каталог, затем подтянуть образы и поднять
+sudo rsync -a /var/tmp/restore/opt/<проект>/ /opt/<проект>/
+# именованный том: создать его и вернуть содержимое ДО первого запуска контейнера
+sudo docker volume create <том>
+sudo rsync -a /var/tmp/restore/var/lib/docker/volumes/<том>/_data/ /var/lib/docker/volumes/<том>/_data/
+cd /opt/<проект> && sudo docker compose up -d
 ```
 
 **5. Конфиги из `/etc` — выборочно, файл за файлом.** Сравнивай с новой системой и переноси
