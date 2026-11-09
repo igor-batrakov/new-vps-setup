@@ -616,6 +616,14 @@ bantime.maxtime = 7d
 ignoreip = 127.0.0.1/8 ::1 <IP_1> <IP_2> <VPN_IP>
 ```
 
+`/etc/fail2ban/fail2ban.d/db.local` — без него нарастание не работает: fail2ban по умолчанию
+хранит историю банов сутки (`dbpurgeage = 1d`), и бот, вернувшийся через пару дней, снова
+получает 1h. Срок — не короче `bantime.maxtime`:
+```ini
+[Definition]
+dbpurgeage = 7d
+```
+
 ```bash
 sudo systemctl enable --now fail2ban
 sudo fail2ban-client status sshd
